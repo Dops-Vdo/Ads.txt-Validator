@@ -1,4 +1,4 @@
-# V-Ads.txt-Validator
+# Vdo.ai-Ads.txt-Validator
 
 A Streamlit app to validate ads.txt coverage across domains and demand partners.
 
