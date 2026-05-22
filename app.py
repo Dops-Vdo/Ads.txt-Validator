@@ -585,18 +585,22 @@ with tab_validate:
             f"**Crawler was blocked for {len(blocked_doms)} domain(s).** "
             "Paste their ads.txt content below and click Re-validate."
         )
-        manual_overrides = {}
         rcols = st.columns(2)
         for i, d in enumerate(sorted(blocked_doms)):
             with rcols[i % 2]:
-                manual_overrides[d] = st.text_area(
+                st.text_area(
                     f"{d}",
                     height=150,
                     key=f"revalidate_manual_{d}",
                     placeholder=f"Paste content from https://{d}/ads.txt here..."
                 )
         if st.button(f"Re-validate {len(blocked_doms)} blocked site(s)", type="primary", key="btn_revalidate"):
-            filled = {d: v for d, v in manual_overrides.items() if v.strip()}
+            # Read from session state only when button is clicked — avoids rerun on paste
+            filled = {
+                d: st.session_state.get(f"revalidate_manual_{d}", "")
+                for d in blocked_doms
+                if st.session_state.get(f"revalidate_manual_{d}", "").strip()
+            }
             if not filled:
                 st.warning("Please paste ads.txt content for at least one blocked domain.")
             else:
@@ -608,106 +612,104 @@ with tab_validate:
                 st.session_state["val_crawler"] = {**crawler_status, **new_status}
                 st.rerun()
 
-        # ==========================
-        # SUMMARY METRICS
-        # ==========================
-        st.subheader("Summary")
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Domains Checked", len(doms))
-        m2.metric("Partners Checked", len(selected_partners))
-        m3.metric("Avg Coverage %", f"{df['Coverage %'].mean():.1f}%")
-        fully_covered = df[df["Missing"] == 0].shape[0]
-        m4.metric("Fully Covered", fully_covered)
-        primary_ok = df[df["Primary Lines Present"] == "Yes"].shape[0]
-        m5.metric("Primary Lines OK", f"{primary_ok}/{len(df)}")
+    # ==========================
+    # SUMMARY METRICS
+    # ==========================
+    st.subheader("Summary")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Domains Checked", len(doms))
+    m2.metric("Partners Checked", len(selected_partners))
+    m3.metric("Avg Coverage %", f"{df['Coverage %'].mean():.1f}%")
+    fully_covered = df[df["Missing"] == 0].shape[0]
+    m4.metric("Fully Covered", fully_covered)
+    primary_ok = df[df["Primary Lines Present"] == "Yes"].shape[0]
+    m5.metric("Primary Lines OK", f"{primary_ok}/{len(df)}")
 
-        st.divider()
+    st.divider()
 
-        # ==========================
-        # RESULTS TABLE
-        # ==========================
-        st.subheader("Results")
+    # ==========================
+    # RESULTS TABLE
+    # ==========================
+    st.subheader("Results")
 
-        def highlight_coverage(val):
-            if isinstance(val, float):
-                if val == 100:
-                    return "background-color: #d4edda; color: #155724"
-                elif val >= 50:
-                    return "background-color: #fff3cd; color: #856404"
-                else:
-                    return "background-color: #f8d7da; color: #721c24"
-            return ""
-
-        def highlight_primary(val):
-            if val == "Yes":
+    def highlight_coverage(val):
+        if isinstance(val, float):
+            if val == 100:
                 return "background-color: #d4edda; color: #155724"
-            elif val == "No primary lines set":
-                return "background-color: #e2e3e5; color: #383d41"
-            elif "Partial" in str(val):
+            elif val >= 50:
                 return "background-color: #fff3cd; color: #856404"
             else:
                 return "background-color: #f8d7da; color: #721c24"
+        return ""
 
-        styled = (
-            df.style
-            .map(highlight_coverage, subset=["Coverage %"])
-            .map(highlight_primary, subset=["Primary Lines Present"])
-        )
-        st.dataframe(styled, use_container_width=True)
+    def highlight_primary(val):
+        if val == "Yes":
+            return "background-color: #d4edda; color: #155724"
+        elif val == "No primary lines set":
+            return "background-color: #e2e3e5; color: #383d41"
+        elif "Partial" in str(val):
+            return "background-color: #fff3cd; color: #856404"
+        else:
+            return "background-color: #f8d7da; color: #721c24"
 
-        # ==========================
-        # MISSING LINES DETAIL
-        # ==========================
-        if show_missing_lines and missing_detail:
-            st.subheader("Missing Lines Detail")
-            for domain, partners_info in missing_detail.items():
-                with st.expander(f"{domain}"):
+    styled = (
+        df.style
+        .map(highlight_coverage, subset=["Coverage %"])
+        .map(highlight_primary, subset=["Primary Lines Present"])
+    )
+    st.dataframe(styled, use_container_width=True)
+
+    # ==========================
+    # MISSING LINES DETAIL
+    # ==========================
+    if show_missing_lines and missing_detail:
+        st.subheader("Missing Lines Detail")
+        for domain, partners_info in missing_detail.items():
+            with st.expander(f"{domain}"):
+                for partner_name, lines in partners_info.items():
+                    st.markdown(f"**{partner_name}** — {len(lines)} missing line(s):")
+                    st.code("\n".join(lines), language="text")
+
+    # ==========================
+    # DOWNLOADS
+    # ==========================
+    st.divider()
+    st.subheader("Downloads")
+
+    dl1, dl2 = st.columns(2)
+
+    with dl1:
+        excel_buf = io.BytesIO()
+        with pd.ExcelWriter(excel_buf, engine="xlsxwriter") as writer:
+            df.to_excel(writer, index=False, sheet_name="Validation Results")
+            if show_missing_lines and missing_detail:
+                missing_rows = []
+                for domain, partners_info in missing_detail.items():
                     for partner_name, lines in partners_info.items():
-                        st.markdown(f"**{partner_name}** — {len(lines)} missing line(s):")
-                        st.code("\n".join(lines), language="text")
+                        for line in lines:
+                            missing_rows.append({
+                                "Domain": domain,
+                                "Partner": partner_name,
+                                "Missing Line": line
+                            })
+                if missing_rows:
+                    pd.DataFrame(missing_rows).to_excel(writer, index=False, sheet_name="Missing Lines")
+        excel_buf.seek(0)
+        st.download_button(
+            label="Download Excel Report",
+            data=excel_buf,
+            file_name="ads_txt_validation.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
-        # ==========================
-        # DOWNLOADS
-        # ==========================
-        st.divider()
-        st.subheader("Downloads")
-
-        dl1, dl2 = st.columns(2)
-
-        # Excel report
-        with dl1:
-            excel_buf = io.BytesIO()
-            with pd.ExcelWriter(excel_buf, engine="xlsxwriter") as writer:
-                df.to_excel(writer, index=False, sheet_name="Validation Results")
-                if show_missing_lines and missing_detail:
-                    missing_rows = []
-                    for domain, partners_info in missing_detail.items():
-                        for partner_name, lines in partners_info.items():
-                            for line in lines:
-                                missing_rows.append({
-                                    "Domain": domain,
-                                    "Partner": partner_name,
-                                    "Missing Line": line
-                                })
-                    if missing_rows:
-                        pd.DataFrame(missing_rows).to_excel(writer, index=False, sheet_name="Missing Lines")
-            excel_buf.seek(0)
-            st.download_button(
-                label="Download Excel Report",
-                data=excel_buf,
-                file_name="ads_txt_validation.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-        # Primary lines .txt for selected partners
-        with dl2:
-            selected_pid_names = [
-                (partner_map[p][0], p) for p in selected_partners
-            ]
-            primary_txt = build_primary_txt(selected_pid_names)
-            st.download_button(
-                label="Download Primary Lines .txt (selected partners)",
-                data=primary_txt if primary_txt else "# No primary lines found",
-                file_name="primary_lines.txt",
-                mime="text/plain"
-            )
+    with dl2:
+        selected_pid_names = [
+            (partner_map[p][0], p) for p in selected_partners
+        ]
+        primary_txt = build_primary_txt(selected_pid_names)
+        st.download_button(
+            label="Download Primary Lines .txt (selected partners)",
+            data=primary_txt if primary_txt else "# No primary lines found",
+            file_name="primary_lines.txt",
+            mime="text/plain"
+        )
