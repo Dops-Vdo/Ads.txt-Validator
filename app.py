@@ -13,7 +13,7 @@ import streamlit as st
 # ==========================
 # CONFIG
 # ==========================
-APP_TITLE = "Demand-Ads.txt-validator"
+APP_TITLE = "Demand-Ads.txt-Validator"
 
 INTEGRATION_OPTIONS = ["VAST", "PREBID", "VAST+PREBID", "ORTB", "Custom..."]
 
@@ -483,86 +483,29 @@ with tab_validate:
     st.divider()
 
     # ==========================
-    # MANUAL ADS.TXT INPUT
+    # VALIDATE BUTTON + RE-VALIDATE FLOW
     # ==========================
-    st.subheader("Manual Ads.txt Input (for blocked sites)")
-    st.caption(
-        "If a site blocks the auto-crawler, open **site.com/ads.txt** in your browser, "
-        "copy all lines, and paste them below. Manual input takes priority over the crawler."
-    )
 
-    preview_doms = set(selected_domains)
-    for d in pasted_domains.replace(",", " ").split():
-        d = d.strip().lower().rstrip("/")
-        if d:
-            preview_doms.add(d)
-
-    manual_inputs: Dict[str, str] = {}
-
-    if preview_doms:
-        cols = st.columns(2)
-        for i, d in enumerate(sorted(preview_doms)):
-            with cols[i % 2]:
-                manual_inputs[d] = st.text_area(
-                    f"{d}",
-                    height=150,
-                    key=f"manual_{d}",
-                    placeholder=f"Paste content from https://{d}/ads.txt here (optional)...",
-                    help="Leave empty to use auto-crawler."
-                )
-    else:
-        st.info("Select or paste domains above — manual input boxes will appear here.")
-
-    st.divider()
-
-    # ==========================
-    # VALIDATE BUTTON
-    # ==========================
-    if st.button("Validate", type="primary"):
-
-        doms = set(selected_domains)
-        for d in pasted_domains.replace(",", " ").split():
-            d = d.strip().lower().rstrip("/")
-            if d:
-                doms.add(d)
-                if d not in domains:
-                    add_domain(d, "")
-
-        if not doms:
-            st.warning("Please select or paste at least one domain.")
-            st.stop()
-
-        if not selected_partners:
-            st.warning("Please select at least one partner.")
-            st.stop()
-
+    def run_validation(doms_to_run, sel_partners, manual_overrides):
         results = []
-        missing_detail: Dict[str, Dict[str, List[str]]] = {}
-        crawler_status: Dict[str, str] = {}
-
+        missing_det = {}
+        crawler_stat = {}
         progress = st.progress(0, text="Fetching ads.txt files...")
-        total = len(doms)
-
-        for i, d in enumerate(sorted(doms)):
+        total = len(doms_to_run)
+        for i, d in enumerate(sorted(doms_to_run)):
             progress.progress(i / total, text=f"Processing `{d}`...")
-
-            manual_raw = manual_inputs.get(d, "").strip()
-
+            manual_raw = manual_overrides.get(d, "").strip()
             if manual_raw:
                 live = parse_manual_lines(manual_raw)
-                crawler_status[d] = "manual"
+                crawler_stat[d] = "manual"
             else:
                 live, status = fetch_ads_txt(d)
-                crawler_status[d] = status
-
+                crawler_stat[d] = status
             live_norm = set(norm(x) for x in live)
-
-            for p in selected_partners:
+            for p in sel_partners:
                 pid, name, itype = partner_map[p]
                 lines = get_partner_lines(pid)
                 primary_lines = get_partner_primary_lines(pid)
-
-                # Primary lines coverage
                 primary_present_count = sum(1 for l in primary_lines if norm(l) in live_norm)
                 primary_total = len(primary_lines)
                 if primary_total == 0:
@@ -571,18 +514,14 @@ with tab_validate:
                     primary_status = "Yes"
                 else:
                     primary_status = f"Partial ({primary_present_count}/{primary_total})"
-
                 present = [l for l in lines if norm(l) in live_norm]
                 missing = [l for l in lines if norm(l) not in live_norm]
-
                 total_lines = len(lines)
                 coverage_pct = round((len(present) / total_lines * 100), 1) if total_lines > 0 else 0.0
-
                 source_label = (
-                    "Manual" if crawler_status[d] == "manual"
-                    else ("Crawler" if crawler_status[d] == "crawler" else "Blocked")
+                    "Manual" if crawler_stat[d] == "manual"
+                    else ("Crawler" if crawler_stat[d] == "crawler" else "Blocked")
                 )
-
                 results.append({
                     "Domain": d,
                     "Account Manager": am_map.get(d, ""),
@@ -595,31 +534,79 @@ with tab_validate:
                     "Missing": len(missing),
                     "Coverage %": coverage_pct,
                 })
-
                 if missing and show_missing_lines:
-                    missing_detail.setdefault(d, {})[name] = missing
-
+                    missing_det.setdefault(d, {})[name] = missing
         progress.progress(1.0, text="Done!")
+        return pd.DataFrame(results), missing_det, crawler_stat
 
-        df = pd.DataFrame(results)
+    if st.button("Validate", type="primary"):
+        doms = set(selected_domains)
+        for d in pasted_domains.replace(",", " ").split():
+            d = d.strip().lower().rstrip("/")
+            if d:
+                doms.add(d)
+                if d not in domains:
+                    add_domain(d, "")
+        if not doms:
+            st.warning("Please select or paste at least one domain.")
+            st.stop()
+        if not selected_partners:
+            st.warning("Please select at least one partner.")
+            st.stop()
 
-        # ==========================
-        # CRAWLER STATUS BANNER
-        # ==========================
-        blocked_doms = [d for d, s in crawler_status.items() if s == "blocked"]
-        manual_used = [d for d, s in crawler_status.items() if s == "manual"]
-        crawled = [d for d, s in crawler_status.items() if s == "crawler"]
+        df, missing_detail, crawler_status = run_validation(doms, selected_partners, {})
+        st.session_state["val_results"] = df.to_dict("records")
+        st.session_state["val_missing"] = missing_detail
+        st.session_state["val_crawler"] = crawler_status
+        st.session_state["val_doms"] = list(doms)
+        st.session_state["val_partners"] = selected_partners
 
-        if blocked_doms:
-            st.warning(
-                f"**Crawler was blocked for {len(blocked_doms)} domain(s):** "
-                f"`{'`, `'.join(blocked_doms)}`  \n"
-                "Paste their ads.txt content in the manual boxes above and re-validate."
-            )
-        if manual_used:
-            st.info(f"**Manual input used for:** `{'`, `'.join(manual_used)}`")
-        if crawled:
-            st.success(f"**Crawler succeeded for:** `{'`, `'.join(crawled)}`")
+    if not st.session_state.get("val_results"):
+        st.stop()
+
+    df = pd.DataFrame(st.session_state["val_results"])
+    missing_detail = st.session_state["val_missing"]
+    crawler_status = st.session_state["val_crawler"]
+    doms = set(st.session_state["val_doms"])
+    selected_partners = st.session_state["val_partners"]
+
+    blocked_doms = [d for d, s in crawler_status.items() if s == "blocked"]
+    manual_used = [d for d, s in crawler_status.items() if s == "manual"]
+    crawled = [d for d, s in crawler_status.items() if s == "crawler"]
+
+    if manual_used:
+        st.info(f"**Manual input used for:** `{'`, `'.join(manual_used)}`")
+    if crawled:
+        st.success(f"**Crawler succeeded for:** `{'`, `'.join(crawled)}`")
+
+    # Blocked sites — show input boxes + re-validate button
+    if blocked_doms:
+        st.warning(
+            f"**Crawler was blocked for {len(blocked_doms)} domain(s).** "
+            "Paste their ads.txt content below and click Re-validate."
+        )
+        manual_overrides = {}
+        rcols = st.columns(2)
+        for i, d in enumerate(sorted(blocked_doms)):
+            with rcols[i % 2]:
+                manual_overrides[d] = st.text_area(
+                    f"{d}",
+                    height=150,
+                    key=f"revalidate_manual_{d}",
+                    placeholder=f"Paste content from https://{d}/ads.txt here..."
+                )
+        if st.button(f"Re-validate {len(blocked_doms)} blocked site(s)", type="primary", key="btn_revalidate"):
+            filled = {d: v for d, v in manual_overrides.items() if v.strip()}
+            if not filled:
+                st.warning("Please paste ads.txt content for at least one blocked domain.")
+            else:
+                crawled_df = df[df["Source"] != "Blocked"]
+                new_df, new_missing, new_status = run_validation(set(filled.keys()), selected_partners, filled)
+                merged_df = pd.concat([crawled_df, new_df], ignore_index=True)
+                st.session_state["val_results"] = merged_df.to_dict("records")
+                st.session_state["val_missing"] = {**missing_detail, **new_missing}
+                st.session_state["val_crawler"] = {**crawler_status, **new_status}
+                st.rerun()
 
         # ==========================
         # SUMMARY METRICS
