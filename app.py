@@ -13,7 +13,7 @@ import streamlit as st
 # ==========================
 # CONFIG
 # ==========================
-APP_TITLE = "V-Ads.txt-validator"
+APP_TITLE = "Demand-Ads.txt-validator"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_DIR = os.path.join(BASE_DIR, "database")
@@ -187,26 +187,26 @@ init_db()
 # ==========================
 # UI — HEADER
 # ==========================
-st.title(f"🔍 {APP_TITLE}")
+st.title(f"{APP_TITLE}")
 st.caption("Validate ads.txt coverage across domains and demand partners.")
 
 # ==========================
 # TABS
 # ==========================
-tab_validate, tab_partners = st.tabs(["✅ Validate", "🤝 Manage Partners"])
+tab_validate, tab_partners = st.tabs(["Validate", "Manage Partners"])
 
 
 # ============================================================
 # TAB 2 — PARTNER MANAGEMENT (full CRUD)
 # ============================================================
 with tab_partners:
-    st.header("🤝 Manage Demand Partners")
+    st.header("Manage Demand Partners")
 
     partners = get_partners()
     partner_map = {p[1]: p for p in partners}
 
-    # ── ADD NEW PARTNER ─────────────────────────────────────
-    with st.expander("➕ Add New Partner", expanded=len(partners) == 0):
+    #  ADD NEW PARTNER 
+    with st.expander("Add New Partner", expanded=len(partners) == 0):
         np_name = st.text_input("Partner Name", key="np_name")
         np_itype = st.text_input("Integration Type (e.g. Direct, Reseller)", key="np_itype")
         np_lines = st.text_area(
@@ -215,7 +215,7 @@ with tab_partners:
             key="np_lines",
             placeholder="pubmatic.com, 123456, DIRECT, abc123\nappnexus.com, 789, RESELLER"
         )
-        if st.button("✅ Add Partner", type="primary", key="btn_add_partner"):
+        if st.button("Add Partner", type="primary", key="btn_add_partner"):
             if not np_name.strip():
                 st.warning("Partner name is required.")
             elif np_name.strip() in partner_map:
@@ -224,19 +224,19 @@ with tab_partners:
                 st.warning("Please paste at least one ads.txt line.")
             else:
                 add_partner(np_name.strip(), np_itype.strip(), np_lines.strip())
-                st.success(f"✅ Partner **{np_name.strip()}** added!")
+                st.success(f"Partner **{np_name.strip()}** added!")
                 st.rerun()
 
     st.divider()
 
-    # ── LIST / EDIT / DELETE PARTNERS ───────────────────────
+    #  LIST / EDIT / DELETE PARTNERS 
     if not partners:
         st.info("No partners yet. Add your first partner above.")
     else:
-        st.subheader(f"📋 All Partners ({len(partners)})")
+        st.subheader(f"All Partners ({len(partners)})")
 
         # Search/filter
-        search = st.text_input("🔍 Search partners", placeholder="Type to filter...", key="partner_search")
+        search = st.text_input("Search partners", placeholder="Type to filter...", key="partner_search")
         filtered = [p for p in partners if search.lower() in p[1].lower()] if search else partners
 
         for pid, pname, pitype in filtered:
@@ -260,19 +260,19 @@ with tab_partners:
                     st.markdown("&nbsp;", unsafe_allow_html=True)  # spacing
                     st.markdown("&nbsp;", unsafe_allow_html=True)
 
-                    if st.button("💾 Save", key=f"save_{pid}", use_container_width=True):
+                    if st.button("Save", key=f"save_{pid}", use_container_width=True):
                         if not edit_name.strip():
                             st.warning("Name cannot be empty.")
                         elif not edit_lines.strip():
                             st.warning("Lines cannot be empty.")
                         else:
                             update_partner(pid, edit_name.strip(), edit_itype.strip(), edit_lines.strip())
-                            st.success(f"✅ **{edit_name.strip()}** updated!")
+                            st.success(f"**{edit_name.strip()}** updated!")
                             st.rerun()
 
                     st.markdown("---")
 
-                    if st.button("🗑️ Delete", key=f"del_{pid}", use_container_width=True):
+                    if st.button("Delete", key=f"del_{pid}", use_container_width=True):
                         st.session_state[f"confirm_del_{pid}"] = True
 
                     if st.session_state.get(f"confirm_del_{pid}"):
@@ -303,13 +303,7 @@ with tab_validate:
     # SIDEBAR
     # ==========================
     with st.sidebar:
-        st.header("📊 Database Info")
-        st.metric("Domains", len(domains))
-        st.metric("Partners", len(partners))
-
-        st.divider()
-
-        st.subheader("➕ Add New Domain")
+        st.subheader("Add New Domain")
         new_domain = st.text_input("Domain (e.g. example.com)")
         new_am = st.text_input("Account Manager")
         if st.button("Add Domain"):
@@ -324,7 +318,7 @@ with tab_validate:
         st.caption("DB path: `database/adsdata.db`")
 
     if not partners:
-        st.warning("⚠️ No partners found. Go to the **Manage Partners** tab to add your first partner.")
+        st.warning("No partners found. Go to the **Manage Partners** tab to add your first partner.")
         st.stop()
 
     # ==========================
@@ -363,14 +357,14 @@ with tab_validate:
     # ==========================
     # MANUAL ADS.TXT INPUT
     # ==========================
-    st.subheader("📋 Manual Ads.txt Input (for blocked sites)")
+    st.subheader("Manual Ads.txt Input (for blocked sites)")
     st.caption(
         "If a site blocks the auto-crawler, open **site.com/ads.txt** in your browser, "
         "copy all lines, and paste them below. Manual input takes priority over the crawler."
     )
 
     preview_doms = set(selected_domains)
-    for d in pasted_domains.replace(",", " ").split():
+    for d in pasted_domains.replace(",", "").split():
         d = d.strip().lower().rstrip("/")
         if d:
             preview_doms.add(d)
@@ -382,24 +376,24 @@ with tab_validate:
         for i, d in enumerate(sorted(preview_doms)):
             with cols[i % 2]:
                 manual_inputs[d] = st.text_area(
-                    f"📌 {d}",
+                    f"{d}",
                     height=150,
                     key=f"manual_{d}",
                     placeholder=f"Paste content from https://{d}/ads.txt here (optional)...",
                     help=f"Leave empty to use auto-crawler."
                 )
     else:
-        st.info("ℹ️ Select or paste domains above — manual input boxes will appear here.")
+        st.info("Select or paste domains above — manual input boxes will appear here.")
 
     st.divider()
 
     # ==========================
     # VALIDATE BUTTON
     # ==========================
-    if st.button("🚀 Validate", type="primary"):
+    if st.button("Validate", type="primary"):
 
         doms = set(selected_domains)
-        for d in pasted_domains.replace(",", " ").split():
+        for d in pasted_domains.replace(",", "").split():
             d = d.strip().lower().rstrip("/")
             if d:
                 doms.add(d)
@@ -441,8 +435,8 @@ with tab_validate:
 
                 primary_line = lines[0] if lines else None
                 primary_present = (
-                    "✅ Yes" if primary_line and norm(primary_line) in live_norm
-                    else "❌ No"
+                    "Yes"if primary_line and norm(primary_line) in live_norm
+                    else "No"
                 )
 
                 present = [l for l in lines if norm(l) in live_norm]
@@ -452,8 +446,8 @@ with tab_validate:
                 coverage_pct = round((len(present) / total_lines * 100), 1) if total_lines > 0 else 0.0
 
                 source_label = (
-                    "🖐 Manual" if crawler_status[d] == "manual"
-                    else ("🤖 Crawler" if crawler_status[d] == "crawler" else "⚠️ Blocked")
+                    "Manual"if crawler_status[d] == "manual"
+                    else ("Crawler"if crawler_status[d] == "crawler"else "Blocked")
                 )
 
                 results.append({
@@ -472,7 +466,7 @@ with tab_validate:
                 if missing and show_missing_lines:
                     missing_detail.setdefault(d, {})[name] = missing
 
-        progress.progress(1.0, text="✅ Done!")
+        progress.progress(1.0, text="Done!")
 
         df = pd.DataFrame(results)
 
@@ -485,26 +479,26 @@ with tab_validate:
 
         if blocked:
             st.warning(
-                f"⚠️ **Crawler was blocked for {len(blocked)} domain(s):** "
+                f"**Crawler was blocked for {len(blocked)} domain(s):** "
                 f"`{'`, `'.join(blocked)}`  \n"
                 "Paste their ads.txt content in the manual boxes above and re-validate."
             )
         if manual_used:
-            st.info(f"🖐 **Manual input used for:** `{'`, `'.join(manual_used)}`")
+            st.info(f"**Manual input used for:** `{'`, `'.join(manual_used)}`")
         if crawled:
-            st.success(f"🤖 **Crawler succeeded for:** `{'`, `'.join(crawled)}`")
+            st.success(f"**Crawler succeeded for:** `{'`, `'.join(crawled)}`")
 
         # ==========================
         # SUMMARY METRICS
         # ==========================
-        st.subheader("📈 Summary")
+        st.subheader("Summary")
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Domains Checked", len(doms))
         m2.metric("Partners Checked", len(selected_partners))
         m3.metric("Avg Coverage %", f"{df['Coverage %'].mean():.1f}%")
         fully_covered = df[df["Missing"] == 0].shape[0]
         m4.metric("Fully Covered", fully_covered)
-        primary_ok = df[df["Primary Line Present"] == "✅ Yes"].shape[0]
+        primary_ok = df[df["Primary Line Present"] == "Yes"].shape[0]
         m5.metric("Primary Lines OK", f"{primary_ok}/{len(df)}")
 
         st.divider()
@@ -512,7 +506,7 @@ with tab_validate:
         # ==========================
         # RESULTS TABLE
         # ==========================
-        st.subheader("📋 Results")
+        st.subheader("Results")
 
         def highlight_coverage(val):
             if isinstance(val, float):
@@ -525,9 +519,9 @@ with tab_validate:
             return ""
 
         def highlight_primary(val):
-            if val == "✅ Yes":
+            if val == "Yes":
                 return "background-color: #d4edda; color: #155724"
-            elif val == "❌ No":
+            elif val == "No":
                 return "background-color: #f8d7da; color: #721c24"
             return ""
 
@@ -542,9 +536,9 @@ with tab_validate:
         # MISSING LINES DETAIL
         # ==========================
         if show_missing_lines and missing_detail:
-            st.subheader("🔎 Missing Lines Detail")
+            st.subheader("Missing Lines Detail")
             for domain, partners_info in missing_detail.items():
-                with st.expander(f"🌐 {domain}"):
+                with st.expander(f"{domain}"):
                     for partner_name, lines in partners_info.items():
                         st.markdown(f"**{partner_name}** — {len(lines)} missing line(s):")
                         st.code("\n".join(lines), language="text")
@@ -572,7 +566,7 @@ with tab_validate:
 
         excel_buf.seek(0)
         st.download_button(
-            label="⬇️ Download Excel Report",
+            label="Download Excel Report",
             data=excel_buf,
             file_name="ads_txt_validation.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
