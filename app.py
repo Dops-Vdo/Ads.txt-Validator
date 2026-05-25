@@ -1,149 +1,169 @@
 # ==========================
 # IMPORTS
 # ==========================
-import os
 import io
-import sqlite3
+import os
 from typing import List, Dict
 
 import pandas as pd
 import requests
 import streamlit as st
+from supabase import create_client, Client
 
 # ==========================
 # CONFIG
 # ==========================
-APP_TITLE = "V-Ads.txt-validator"
+APP_TITLE = "Demand-Ads.txt-validator"
+INTEGRATION_OPTIONS = ["VAST", "PREBID", "VAST+PREBID", "ORTB", "Custom..."]
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_DIR = os.path.join(BASE_DIR, "database")
-os.makedirs(DB_DIR, exist_ok=True)
-
-DB_FILE = os.path.join(DB_DIR, "adsdata.db")
+SUPABASE_URL = "https://sfupddaemxpalstlomzt.supabase.co"
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
 # ==========================
-# DB HELPERS
+# SUPABASE CLIENT
 # ==========================
-def get_conn():
-    return sqlite3.connect(DB_FILE, check_same_thread=False)
-
-
-def init_db():
-    """Initialize DB tables if they don't exist."""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS domains(
-            id INTEGER PRIMARY KEY,
-            domain TEXT UNIQUE,
-            account_manager TEXT
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS partners(
-            id INTEGER PRIMARY KEY,
-            name TEXT UNIQUE,
-            integration_type TEXT
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS partner_lines(
-            id INTEGER PRIMARY KEY,
-            partner_id INTEGER,
-            line TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+@st.cache_resource
+def get_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ==========================
-# CACHED DB READS
+# CACHED READS
 # ==========================
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def get_domains():
-    conn = get_conn()
-    rows = conn.execute("SELECT domain, account_manager FROM domains ORDER BY domain").fetchall()
-    conn.close()
-    return [r[0] for r in rows], {r[0]: r[1] for r in rows}
+    sb = get_supabase()
+    rows = sb.table("domains").select("domain, account_manager").order("domain").execute().data
+    domain_list = [r["domain"] for r in rows]
+    am_map = {r["domain"]: r["account_manager"] or "" for r in rows}
+    return domain_list, am_map
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def get_partners():
-    conn = get_conn()
-    rows = conn.execute("SELECT id, name, integration_type FROM partners ORDER BY name").fetchall()
-    conn.close()
-    return rows
+    sb = get_supabase()
+    rows = sb.table("partners").select("id, name, integration_type").order("name").execute().data
+    return [(r["id"], r["name"], r["integration_type"] or "") for r in rows]
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def get_partner_lines(pid):
-    conn = get_conn()
-    rows = conn.execute("SELECT line FROM partner_lines WHERE partner_id=?", (pid,)).fetchall()
-    conn.close()
-    return list(dict.fromkeys([r[0] for r in rows]))
+    sb = get_supabase()
+    rows = sb.table("partner_lines").select("line").eq("partner_id", pid).eq("is_primary", False).execute().data
+    return list(dict.fromkeys([r["line"] for r in rows]))
+
+
+@st.cache_data(ttl=60)
+def get_partner_primary_lines(pid):
+    sb = get_supabase()
+    rows = sb.table("partner_lines").select("line").eq("partner_id", pid).eq("is_primary", True).execute().data
+    return list(dict.fromkeys([r["line"] for r in rows]))
 
 
 # ==========================
 # WRITE HELPERS — DOMAINS
 # ==========================
-def add_domain(d, am):
-    conn = get_conn()
-    conn.execute("INSERT OR IGNORE INTO domains(domain,account_manager) VALUES (?,?)", (d, am))
-    conn.execute("UPDATE domains SET account_manager=? WHERE domain=?", (am, d))
-    conn.commit()
-    conn.close()
+def add_domain(d: str, am: str):
+    sb = get_supabase()
+    sb.table("domains").upsert({"domain": d, "account_manager": am}, on_conflict="domain").execute()
     get_domains.clear()
 
 
 # ==========================
 # WRITE HELPERS — PARTNERS
 # ==========================
-def add_partner(name: str, itype: str, lines_raw: str):
-    """Insert a new partner with their lines."""
-    conn = get_conn()
-    conn.execute("INSERT OR IGNORE INTO partners(name,integration_type) VALUES (?,?)", (name, itype))
-    pid = conn.execute("SELECT id FROM partners WHERE name=?", (name,)).fetchone()[0]
+def add_partner(name: str, itype: str, lines_raw: str, primary_lines_raw: str):
+    sb = get_supabase()
+    sb.table("partners").upsert({"name": name, "integration_type": itype}, on_conflict="name").execute()
+    pid = sb.table("partners").select("id").eq("name", name).execute().data[0]["id"]
+
+    rows = []
     for ln in lines_raw.splitlines():
         ln = ln.strip().lower()
         if ln:
-            conn.execute("INSERT INTO partner_lines(partner_id,line) VALUES (?,?)", (pid, ln))
-    conn.commit()
-    conn.close()
+            rows.append({"partner_id": pid, "line": ln, "is_primary": False})
+    for ln in primary_lines_raw.splitlines():
+        ln = ln.strip().lower()
+        if ln:
+            rows.append({"partner_id": pid, "line": ln, "is_primary": True})
+    if rows:
+        sb.table("partner_lines").insert(rows).execute()
+
     get_partners.clear()
     get_partner_lines.clear()
+    get_partner_primary_lines.clear()
 
 
-def update_partner(pid: int, new_name: str, new_itype: str, lines_raw: str):
-    """Update partner name, integration type, and replace all lines."""
-    conn = get_conn()
-    conn.execute(
-        "UPDATE partners SET name=?, integration_type=? WHERE id=?",
-        (new_name, new_itype, pid)
-    )
-    # Replace all lines
-    conn.execute("DELETE FROM partner_lines WHERE partner_id=?", (pid,))
+def update_partner(pid: int, new_name: str, new_itype: str, lines_raw: str, primary_lines_raw: str):
+    sb = get_supabase()
+    sb.table("partners").update({"name": new_name, "integration_type": new_itype}).eq("id", pid).execute()
+    sb.table("partner_lines").delete().eq("partner_id", pid).execute()
+
+    rows = []
     for ln in lines_raw.splitlines():
         ln = ln.strip().lower()
         if ln:
-            conn.execute("INSERT INTO partner_lines(partner_id,line) VALUES (?,?)", (pid, ln))
-    conn.commit()
-    conn.close()
+            rows.append({"partner_id": pid, "line": ln, "is_primary": False})
+    for ln in primary_lines_raw.splitlines():
+        ln = ln.strip().lower()
+        if ln:
+            rows.append({"partner_id": pid, "line": ln, "is_primary": True})
+    if rows:
+        sb.table("partner_lines").insert(rows).execute()
+
     get_partners.clear()
     get_partner_lines.clear()
+    get_partner_primary_lines.clear()
 
 
 def delete_partner(pid: int):
-    """Delete a partner and all their lines."""
-    conn = get_conn()
-    conn.execute("DELETE FROM partner_lines WHERE partner_id=?", (pid,))
-    conn.execute("DELETE FROM partners WHERE id=?", (pid,))
-    conn.commit()
-    conn.close()
+    sb = get_supabase()
+    sb.table("partner_lines").delete().eq("partner_id", pid).execute()
+    sb.table("partners").delete().eq("id", pid).execute()
     get_partners.clear()
     get_partner_lines.clear()
+    get_partner_primary_lines.clear()
+
+
+# ==========================
+# HELPER — Integration type widget
+# ==========================
+def integration_type_widget(key_prefix: str, current_value: str = ""):
+    if current_value and current_value not in ["VAST", "PREBID", "VAST+PREBID", "ORTB", ""]:
+        default_idx = INTEGRATION_OPTIONS.index("Custom...")
+    else:
+        opts_map = {"VAST": 0, "PREBID": 1, "VAST+PREBID": 2, "ORTB": 3, "": 0}
+        default_idx = opts_map.get(current_value, 0)
+
+    selected = st.selectbox(
+        "Integration Type",
+        INTEGRATION_OPTIONS,
+        index=default_idx,
+        key=f"{key_prefix}_itype_select"
+    )
+    if selected == "Custom...":
+        custom = st.text_input(
+            "Custom Integration Type",
+            value=current_value if current_value not in ["VAST", "PREBID", "VAST+PREBID", "ORTB"] else "",
+            key=f"{key_prefix}_itype_custom"
+        )
+        return custom.strip()
+    return selected
+
+
+# ==========================
+# HELPER — Build primary lines .txt
+# ==========================
+def build_primary_txt(partner_ids_names) -> str:
+    sections = []
+    for pid, pname in partner_ids_names:
+        plines = get_partner_primary_lines(pid)
+        if plines:
+            block = f"# {pname}\n" + "\n".join(plines)
+            sections.append(block)
+    return "\n\n".join(sections)
 
 
 # ==========================
@@ -180,42 +200,47 @@ def norm(x: str) -> str:
 
 
 # ==========================
-# INIT DB
-# ==========================
-init_db()
-
-# ==========================
 # UI — HEADER
 # ==========================
-st.title(f"🔍 {APP_TITLE}")
+st.title(APP_TITLE)
 st.caption("Validate ads.txt coverage across domains and demand partners.")
 
 # ==========================
 # TABS
 # ==========================
-tab_validate, tab_partners = st.tabs(["✅ Validate", "🤝 Manage Partners"])
+tab_validate, tab_partners = st.tabs(["Validate", "Manage Partners"])
 
 
 # ============================================================
-# TAB 2 — PARTNER MANAGEMENT (full CRUD)
+# TAB 2 — PARTNER MANAGEMENT
 # ============================================================
 with tab_partners:
-    st.header("🤝 Manage Demand Partners")
+    st.header("Manage Demand Partners")
 
     partners = get_partners()
     partner_map = {p[1]: p for p in partners}
 
     # ── ADD NEW PARTNER ─────────────────────────────────────
-    with st.expander("➕ Add New Partner", expanded=len(partners) == 0):
+    with st.expander("Add New Partner", expanded=len(partners) == 0):
         np_name = st.text_input("Partner Name", key="np_name")
-        np_itype = st.text_input("Integration Type (e.g. Direct, Reseller)", key="np_itype")
-        np_lines = st.text_area(
-            "Ads.txt Lines (paste all, one per line)",
-            height=200,
-            key="np_lines",
-            placeholder="pubmatic.com, 123456, DIRECT, abc123\nappnexus.com, 789, RESELLER"
-        )
-        if st.button("✅ Add Partner", type="primary", key="btn_add_partner"):
+        np_itype = integration_type_widget("np")
+        col_lines, col_primary = st.columns(2)
+        with col_lines:
+            np_lines = st.text_area(
+                "All Ads.txt Lines (one per line)",
+                height=220,
+                key="np_lines",
+                placeholder="pubmatic.com, 123456, DIRECT, abc123\nappnexus.com, 789, RESELLER\n..."
+            )
+        with col_primary:
+            np_primary = st.text_area(
+                "Primary Lines (subset — for approvals & publisher output)",
+                height=220,
+                key="np_primary",
+                placeholder="pubmatic.com, 123456, DIRECT, abc123\n..."
+            )
+
+        if st.button("Add Partner", type="primary", key="btn_add_partner"):
             if not np_name.strip():
                 st.warning("Partner name is required.")
             elif np_name.strip() in partner_map:
@@ -223,9 +248,21 @@ with tab_partners:
             elif not np_lines.strip():
                 st.warning("Please paste at least one ads.txt line.")
             else:
-                add_partner(np_name.strip(), np_itype.strip(), np_lines.strip())
-                st.success(f"✅ Partner **{np_name.strip()}** added!")
+                add_partner(np_name.strip(), np_itype, np_lines.strip(), np_primary.strip())
+                st.success(f"Partner **{np_name.strip()}** added!")
                 st.rerun()
+
+    st.divider()
+
+    # ── DOWNLOAD PRIMARY LINES TXT ───────────────────────────
+    if partners:
+        primary_txt = build_primary_txt([(p[0], p[1]) for p in partners])
+        st.download_button(
+            label="Download Primary Lines .txt (all partners)",
+            data=primary_txt if primary_txt else "# No primary lines found",
+            file_name="primary_lines.txt",
+            mime="text/plain"
+        )
 
     st.divider()
 
@@ -233,46 +270,52 @@ with tab_partners:
     if not partners:
         st.info("No partners yet. Add your first partner above.")
     else:
-        st.subheader(f"📋 All Partners ({len(partners)})")
-
-        # Search/filter
-        search = st.text_input("🔍 Search partners", placeholder="Type to filter...", key="partner_search")
+        st.subheader(f"All Partners ({len(partners)})")
+        search = st.text_input("Search partners", placeholder="Type to filter...", key="partner_search")
         filtered = [p for p in partners if search.lower() in p[1].lower()] if search else partners
 
         for pid, pname, pitype in filtered:
             lines = get_partner_lines(pid)
-            with st.expander(f"**{pname}** — {pitype or 'N/A'} — {len(lines)} line(s)"):
-
+            primary_lines = get_partner_primary_lines(pid)
+            with st.expander(f"**{pname}** — {pitype or 'N/A'} — {len(lines)} line(s) | {len(primary_lines)} primary"):
                 col_info, col_actions = st.columns([3, 1])
 
                 with col_info:
-                    # Edit form inside expander
                     edit_name = st.text_input("Partner Name", value=pname, key=f"edit_name_{pid}")
-                    edit_itype = st.text_input("Integration Type", value=pitype or "", key=f"edit_itype_{pid}")
-                    edit_lines = st.text_area(
-                        "Ads.txt Lines (one per line)",
-                        value="\n".join(lines),
-                        height=200,
-                        key=f"edit_lines_{pid}"
-                    )
+                    edit_itype = integration_type_widget(f"edit_{pid}", current_value=pitype or "")
+                    ec1, ec2 = st.columns(2)
+                    with ec1:
+                        edit_lines = st.text_area(
+                            "All Ads.txt Lines",
+                            value="\n".join(lines),
+                            height=220,
+                            key=f"edit_lines_{pid}"
+                        )
+                    with ec2:
+                        edit_primary = st.text_area(
+                            "Primary Lines",
+                            value="\n".join(primary_lines),
+                            height=220,
+                            key=f"edit_primary_{pid}"
+                        )
 
                 with col_actions:
-                    st.markdown("&nbsp;", unsafe_allow_html=True)  # spacing
+                    st.markdown("&nbsp;", unsafe_allow_html=True)
                     st.markdown("&nbsp;", unsafe_allow_html=True)
 
-                    if st.button("💾 Save", key=f"save_{pid}", use_container_width=True):
+                    if st.button("Save", key=f"save_{pid}", use_container_width=True):
                         if not edit_name.strip():
                             st.warning("Name cannot be empty.")
                         elif not edit_lines.strip():
                             st.warning("Lines cannot be empty.")
                         else:
-                            update_partner(pid, edit_name.strip(), edit_itype.strip(), edit_lines.strip())
-                            st.success(f"✅ **{edit_name.strip()}** updated!")
+                            update_partner(pid, edit_name.strip(), edit_itype, edit_lines.strip(), edit_primary.strip())
+                            st.success(f"**{edit_name.strip()}** updated!")
                             st.rerun()
 
                     st.markdown("---")
 
-                    if st.button("🗑️ Delete", key=f"del_{pid}", use_container_width=True):
+                    if st.button("Delete", key=f"del_{pid}", use_container_width=True):
                         st.session_state[f"confirm_del_{pid}"] = True
 
                     if st.session_state.get(f"confirm_del_{pid}"):
@@ -289,27 +332,28 @@ with tab_partners:
                                 st.session_state.pop(f"confirm_del_{pid}", None)
                                 st.rerun()
 
+                if primary_lines:
+                    per_txt = f"# {pname}\n" + "\n".join(primary_lines)
+                    st.download_button(
+                        label=f"Download {pname} primary lines",
+                        data=per_txt,
+                        file_name=f"{pname.replace(' ', '_')}_primary_lines.txt",
+                        mime="text/plain",
+                        key=f"dl_primary_{pid}"
+                    )
+
+
 # ============================================================
 # TAB 1 — VALIDATE
 # ============================================================
 with tab_validate:
 
-    # Reload partners fresh for validation tab
     partners = get_partners()
     partner_map = {p[1]: p for p in partners}
     domains, am_map = get_domains()
 
-    # ==========================
-    # SIDEBAR
-    # ==========================
     with st.sidebar:
-        st.header("📊 Database Info")
-        st.metric("Domains", len(domains))
-        st.metric("Partners", len(partners))
-
-        st.divider()
-
-        st.subheader("➕ Add New Domain")
+        st.subheader("Add New Domain")
         new_domain = st.text_input("Domain (e.g. example.com)")
         new_am = st.text_input("Account Manager")
         if st.button("Add Domain"):
@@ -320,40 +364,20 @@ with tab_validate:
             else:
                 st.warning("Please enter a domain.")
 
-        st.divider()
-        st.caption("DB path: `database/adsdata.db`")
-
     if not partners:
-        st.warning("⚠️ No partners found. Go to the **Manage Partners** tab to add your first partner.")
+        st.warning("No partners found. Go to the **Manage Partners** tab to add your first partner.")
         st.stop()
 
-    # ==========================
-    # DOMAIN SELECTION
-    # ==========================
     col_left, col_right = st.columns([2, 1])
-
     with col_left:
-        selected_domains = st.multiselect(
-            "Select Domains from DB",
-            domains,
-            help="Pick one or more domains to validate."
-        )
-
+        selected_domains = st.multiselect("Select Domains from DB", domains)
     with col_right:
-        pasted_domains = st.text_area(
-            "Or paste domains (one per line / space-separated)",
-            height=120,
-            help="Extra domains not in the DB will be added automatically."
-        )
+        pasted_domains = st.text_area("Or paste domains (one per line / space-separated)", height=120)
 
-    # ==========================
-    # PARTNER SELECTION
-    # ==========================
     selected_partners = st.multiselect(
         "Select Partners to Validate",
         list(partner_map.keys()),
-        default=list(partner_map.keys()),
-        help="Choose which demand partners to check coverage for."
+        default=list(partner_map.keys())
     )
 
     show_missing_lines = st.checkbox("Show missing lines in results", value=False)
@@ -361,43 +385,62 @@ with tab_validate:
     st.divider()
 
     # ==========================
-    # MANUAL ADS.TXT INPUT
+    # VALIDATION LOGIC
     # ==========================
-    st.subheader("📋 Manual Ads.txt Input (for blocked sites)")
-    st.caption(
-        "If a site blocks the auto-crawler, open **site.com/ads.txt** in your browser, "
-        "copy all lines, and paste them below. Manual input takes priority over the crawler."
-    )
-
-    preview_doms = set(selected_domains)
-    for d in pasted_domains.replace(",", " ").split():
-        d = d.strip().lower().rstrip("/")
-        if d:
-            preview_doms.add(d)
-
-    manual_inputs: Dict[str, str] = {}
-
-    if preview_doms:
-        cols = st.columns(2)
-        for i, d in enumerate(sorted(preview_doms)):
-            with cols[i % 2]:
-                manual_inputs[d] = st.text_area(
-                    f"📌 {d}",
-                    height=150,
-                    key=f"manual_{d}",
-                    placeholder=f"Paste content from https://{d}/ads.txt here (optional)...",
-                    help=f"Leave empty to use auto-crawler."
+    def run_validation(doms_to_run, sel_partners, manual_overrides):
+        results = []
+        missing_det = {}
+        crawler_stat = {}
+        progress = st.progress(0, text="Fetching ads.txt files...")
+        total = len(doms_to_run)
+        for i, d in enumerate(sorted(doms_to_run)):
+            progress.progress(i / total, text=f"Processing `{d}`...")
+            manual_raw = manual_overrides.get(d, "").strip()
+            if manual_raw:
+                live = parse_manual_lines(manual_raw)
+                crawler_stat[d] = "manual"
+            else:
+                live, status = fetch_ads_txt(d)
+                crawler_stat[d] = status
+            live_norm = set(norm(x) for x in live)
+            for p in sel_partners:
+                pid, name, itype = partner_map[p]
+                lines = get_partner_lines(pid)
+                primary_lines = get_partner_primary_lines(pid)
+                primary_present_count = sum(1 for l in primary_lines if norm(l) in live_norm)
+                primary_total = len(primary_lines)
+                if primary_total == 0:
+                    primary_status = "No primary lines set"
+                elif primary_present_count == primary_total:
+                    primary_status = "Yes"
+                else:
+                    primary_status = f"Partial ({primary_present_count}/{primary_total})"
+                present = [l for l in lines if norm(l) in live_norm]
+                missing = [l for l in lines if norm(l) not in live_norm]
+                total_lines = len(lines)
+                coverage_pct = round((len(present) / total_lines * 100), 1) if total_lines > 0 else 0.0
+                source_label = (
+                    "Manual" if crawler_stat[d] == "manual"
+                    else ("Crawler" if crawler_stat[d] == "crawler" else "Blocked")
                 )
-    else:
-        st.info("ℹ️ Select or paste domains above — manual input boxes will appear here.")
+                results.append({
+                    "Domain": d,
+                    "Account Manager": am_map.get(d, ""),
+                    "Source": source_label,
+                    "Partner": name,
+                    "Integration": itype,
+                    "Primary Lines Present": primary_status,
+                    "Total Lines": total_lines,
+                    "Present": len(present),
+                    "Missing": len(missing),
+                    "Coverage %": coverage_pct,
+                })
+                if missing and show_missing_lines:
+                    missing_det.setdefault(d, {})[name] = missing
+        progress.progress(1.0, text="Done!")
+        return pd.DataFrame(results), missing_det, crawler_stat
 
-    st.divider()
-
-    # ==========================
-    # VALIDATE BUTTON
-    # ==========================
-    if st.button("🚀 Validate", type="primary"):
-
+    if st.button("Validate", type="primary"):
         doms = set(selected_domains)
         for d in pasted_domains.replace(",", " ").split():
             d = d.strip().lower().rstrip("/")
@@ -405,175 +448,154 @@ with tab_validate:
                 doms.add(d)
                 if d not in domains:
                     add_domain(d, "")
-
         if not doms:
             st.warning("Please select or paste at least one domain.")
             st.stop()
-
         if not selected_partners:
             st.warning("Please select at least one partner.")
             st.stop()
 
-        results = []
-        missing_detail: Dict[str, Dict[str, List[str]]] = {}
-        crawler_status: Dict[str, str] = {}
+        df, missing_detail, crawler_status = run_validation(doms, selected_partners, {})
+        st.session_state["val_results"] = df.to_dict("records")
+        st.session_state["val_missing"] = missing_detail
+        st.session_state["val_crawler"] = crawler_status
+        st.session_state["val_doms"] = list(doms)
+        st.session_state["val_partners"] = selected_partners
 
-        progress = st.progress(0, text="Fetching ads.txt files...")
-        total = len(doms)
+    if not st.session_state.get("val_results"):
+        st.stop()
 
-        for i, d in enumerate(sorted(doms)):
-            progress.progress(i / total, text=f"Processing `{d}`...")
+    df = pd.DataFrame(st.session_state["val_results"])
+    missing_detail = st.session_state["val_missing"]
+    crawler_status = st.session_state["val_crawler"]
+    doms = set(st.session_state["val_doms"])
+    selected_partners = st.session_state["val_partners"]
 
-            manual_raw = manual_inputs.get(d, "").strip()
+    blocked_doms = [d for d, s in crawler_status.items() if s == "blocked"]
+    manual_used = [d for d, s in crawler_status.items() if s == "manual"]
+    crawled = [d for d, s in crawler_status.items() if s == "crawler"]
 
-            if manual_raw:
-                live = parse_manual_lines(manual_raw)
-                crawler_status[d] = "manual"
-            else:
-                live, status = fetch_ads_txt(d)
-                crawler_status[d] = status
+    if manual_used:
+        st.info(f"**Manual input used for:** `{'`, `'.join(manual_used)}`")
+    if crawled:
+        st.success(f"**Crawler succeeded for:** `{'`, `'.join(crawled)}`")
 
-            live_norm = set(norm(x) for x in live)
-
-            for p in selected_partners:
-                pid, name, itype = partner_map[p]
-                lines = get_partner_lines(pid)
-
-                primary_line = lines[0] if lines else None
-                primary_present = (
-                    "✅ Yes" if primary_line and norm(primary_line) in live_norm
-                    else "❌ No"
-                )
-
-                present = [l for l in lines if norm(l) in live_norm]
-                missing = [l for l in lines if norm(l) not in live_norm]
-
-                total_lines = len(lines)
-                coverage_pct = round((len(present) / total_lines * 100), 1) if total_lines > 0 else 0.0
-
-                source_label = (
-                    "🖐 Manual" if crawler_status[d] == "manual"
-                    else ("🤖 Crawler" if crawler_status[d] == "crawler" else "⚠️ Blocked")
-                )
-
-                results.append({
-                    "Domain": d,
-                    "Account Manager": am_map.get(d, ""),
-                    "Source": source_label,
-                    "Partner": name,
-                    "Integration": itype,
-                    "Primary Line Present": primary_present,
-                    "Total Lines": total_lines,
-                    "Present": len(present),
-                    "Missing": len(missing),
-                    "Coverage %": coverage_pct,
-                })
-
-                if missing and show_missing_lines:
-                    missing_detail.setdefault(d, {})[name] = missing
-
-        progress.progress(1.0, text="✅ Done!")
-
-        df = pd.DataFrame(results)
-
-        # ==========================
-        # CRAWLER STATUS BANNER
-        # ==========================
-        blocked = [d for d, s in crawler_status.items() if s == "blocked"]
-        manual_used = [d for d, s in crawler_status.items() if s == "manual"]
-        crawled = [d for d, s in crawler_status.items() if s == "crawler"]
-
-        if blocked:
-            st.warning(
-                f"⚠️ **Crawler was blocked for {len(blocked)} domain(s):** "
-                f"`{'`, `'.join(blocked)}`  \n"
-                "Paste their ads.txt content in the manual boxes above and re-validate."
-            )
-        if manual_used:
-            st.info(f"🖐 **Manual input used for:** `{'`, `'.join(manual_used)}`")
-        if crawled:
-            st.success(f"🤖 **Crawler succeeded for:** `{'`, `'.join(crawled)}`")
-
-        # ==========================
-        # SUMMARY METRICS
-        # ==========================
-        st.subheader("📈 Summary")
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Domains Checked", len(doms))
-        m2.metric("Partners Checked", len(selected_partners))
-        m3.metric("Avg Coverage %", f"{df['Coverage %'].mean():.1f}%")
-        fully_covered = df[df["Missing"] == 0].shape[0]
-        m4.metric("Fully Covered", fully_covered)
-        primary_ok = df[df["Primary Line Present"] == "✅ Yes"].shape[0]
-        m5.metric("Primary Lines OK", f"{primary_ok}/{len(df)}")
-
-        st.divider()
-
-        # ==========================
-        # RESULTS TABLE
-        # ==========================
-        st.subheader("📋 Results")
-
-        def highlight_coverage(val):
-            if isinstance(val, float):
-                if val == 100:
-                    return "background-color: #d4edda; color: #155724"
-                elif val >= 50:
-                    return "background-color: #fff3cd; color: #856404"
-                else:
-                    return "background-color: #f8d7da; color: #721c24"
-            return ""
-
-        def highlight_primary(val):
-            if val == "✅ Yes":
-                return "background-color: #d4edda; color: #155724"
-            elif val == "❌ No":
-                return "background-color: #f8d7da; color: #721c24"
-            return ""
-
-        styled = (
-            df.style
-            .map(highlight_coverage, subset=["Coverage %"])
-            .map(highlight_primary, subset=["Primary Line Present"])
+    if blocked_doms:
+        st.warning(
+            f"**Crawler was blocked for {len(blocked_doms)} domain(s).** "
+            "Paste their ads.txt content below and click Re-validate."
         )
-        st.dataframe(styled, use_container_width=True)
+        rcols = st.columns(2)
+        for i, d in enumerate(sorted(blocked_doms)):
+            with rcols[i % 2]:
+                st.text_area(
+                    f"{d}",
+                    height=150,
+                    key=f"revalidate_manual_{d}",
+                    placeholder=f"Paste content from https://{d}/ads.txt here..."
+                )
+        if st.button(f"Re-validate {len(blocked_doms)} blocked site(s)", type="primary", key="btn_revalidate"):
+            filled = {
+                d: st.session_state.get(f"revalidate_manual_{d}", "")
+                for d in blocked_doms
+                if st.session_state.get(f"revalidate_manual_{d}", "").strip()
+            }
+            if not filled:
+                st.warning("Please paste ads.txt content for at least one blocked domain.")
+            else:
+                crawled_df = df[df["Source"] != "Blocked"]
+                new_df, new_missing, new_status = run_validation(set(filled.keys()), selected_partners, filled)
+                merged_df = pd.concat([crawled_df, new_df], ignore_index=True)
+                st.session_state["val_results"] = merged_df.to_dict("records")
+                st.session_state["val_missing"] = {**missing_detail, **new_missing}
+                st.session_state["val_crawler"] = {**crawler_status, **new_status}
+                st.rerun()
 
-        # ==========================
-        # MISSING LINES DETAIL
-        # ==========================
-        if show_missing_lines and missing_detail:
-            st.subheader("🔎 Missing Lines Detail")
-            for domain, partners_info in missing_detail.items():
-                with st.expander(f"🌐 {domain}"):
-                    for partner_name, lines in partners_info.items():
-                        st.markdown(f"**{partner_name}** — {len(lines)} missing line(s):")
-                        st.code("\n".join(lines), language="text")
+    # ==========================
+    # SUMMARY METRICS
+    # ==========================
+    st.subheader("Summary")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Domains Checked", len(doms))
+    m2.metric("Partners Checked", len(selected_partners))
+    m3.metric("Avg Coverage %", f"{df['Coverage %'].mean():.1f}%")
+    fully_covered = df[df["Missing"] == 0].shape[0]
+    m4.metric("Fully Covered", fully_covered)
+    primary_ok = df[df["Primary Lines Present"] == "Yes"].shape[0]
+    m5.metric("Primary Lines OK", f"{primary_ok}/{len(df)}")
 
-        # ==========================
-        # DOWNLOAD
-        # ==========================
-        st.divider()
+    st.divider()
+
+    # ==========================
+    # RESULTS TABLE
+    # ==========================
+    st.subheader("Results")
+
+    def highlight_coverage(val):
+        if isinstance(val, float):
+            if val == 100:
+                return "background-color: #d4edda; color: #155724"
+            elif val >= 50:
+                return "background-color: #fff3cd; color: #856404"
+            else:
+                return "background-color: #f8d7da; color: #721c24"
+        return ""
+
+    def highlight_primary(val):
+        if val == "Yes":
+            return "background-color: #d4edda; color: #155724"
+        elif val == "No primary lines set":
+            return "background-color: #e2e3e5; color: #383d41"
+        elif "Partial" in str(val):
+            return "background-color: #fff3cd; color: #856404"
+        else:
+            return "background-color: #f8d7da; color: #721c24"
+
+    styled = (
+        df.style
+        .map(highlight_coverage, subset=["Coverage %"])
+        .map(highlight_primary, subset=["Primary Lines Present"])
+    )
+    st.dataframe(styled, use_container_width=True)
+
+    if show_missing_lines and missing_detail:
+        st.subheader("Missing Lines Detail")
+        for domain, partners_info in missing_detail.items():
+            with st.expander(f"{domain}"):
+                for partner_name, lines in partners_info.items():
+                    st.markdown(f"**{partner_name}** — {len(lines)} missing line(s):")
+                    st.code("\n".join(lines), language="text")
+
+    st.divider()
+    st.subheader("Downloads")
+    dl1, dl2 = st.columns(2)
+
+    with dl1:
         excel_buf = io.BytesIO()
         with pd.ExcelWriter(excel_buf, engine="xlsxwriter") as writer:
             df.to_excel(writer, index=False, sheet_name="Validation Results")
-
             if show_missing_lines and missing_detail:
                 missing_rows = []
                 for domain, partners_info in missing_detail.items():
                     for partner_name, lines in partners_info.items():
                         for line in lines:
-                            missing_rows.append({
-                                "Domain": domain,
-                                "Partner": partner_name,
-                                "Missing Line": line
-                            })
+                            missing_rows.append({"Domain": domain, "Partner": partner_name, "Missing Line": line})
                 if missing_rows:
                     pd.DataFrame(missing_rows).to_excel(writer, index=False, sheet_name="Missing Lines")
-
         excel_buf.seek(0)
         st.download_button(
-            label="⬇️ Download Excel Report",
+            label="Download Excel Report",
             data=excel_buf,
             file_name="ads_txt_validation.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    with dl2:
+        selected_pid_names = [(partner_map[p][0], p) for p in selected_partners]
+        primary_txt = build_primary_txt(selected_pid_names)
+        st.download_button(
+            label="Download Primary Lines .txt (selected partners)",
+            data=primary_txt if primary_txt else "# No primary lines found",
+            file_name="primary_lines.txt",
+            mime="text/plain"
         )
