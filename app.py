@@ -208,7 +208,7 @@ st.caption("Validate ads.txt coverage across domains and demand partners.")
 # ==========================
 # TABS
 # ==========================
-tab_validate, tab_partners = st.tabs(["Validate", "Manage Partners"])
+tab_validate, tab_partners, tab_export = st.tabs(["Validate", "Manage Partners", "Export Lines"])
 
 
 # ============================================================
@@ -599,3 +599,83 @@ with tab_validate:
             file_name="primary_lines.txt",
             mime="text/plain"
         )
+
+
+# ============================================================
+# TAB 3 — EXPORT LINES
+# ============================================================
+with tab_export:
+    st.header("Export Partner Lines")
+    st.caption("Select partners and export their ads.txt lines as a .txt file.")
+
+    ex_partners = get_partners()
+    ex_partner_map = {p[1]: p for p in ex_partners}
+
+    if not ex_partners:
+        st.warning("No partners found. Go to the Manage Partners tab to add partners first.")
+    else:
+        # Partner multiselect
+        selected_export_partners = st.multiselect(
+            "Select Partners",
+            list(ex_partner_map.keys()),
+            help="Choose one or more partners to export lines for."
+        )
+
+        # Primary only toggle
+        primary_only = st.checkbox(
+            "Only Primary Lines",
+            value=False,
+            help="If checked, only primary lines will be exported. Uncheck to export all lines."
+        )
+
+        if primary_only:
+            st.info("Only primary lines will be included in the export, grouped by partner name.")
+
+        st.divider()
+
+        if st.button("Generate Export", type="primary", key="btn_export"):
+            if not selected_export_partners:
+                st.warning("Please select at least one partner.")
+            else:
+                sections = []
+                empty_partners = []
+
+                for pname in selected_export_partners:
+                    pid = ex_partner_map[pname][0]
+
+                    if primary_only:
+                        lines = get_partner_primary_lines(pid)
+                    else:
+                        lines = get_partner_lines(pid)
+
+                    if lines:
+                        block = f"# {pname}\n" + "\n".join(lines)
+                        sections.append(block)
+                    else:
+                        empty_partners.append(pname)
+
+                if empty_partners:
+                    st.warning(
+                        f"No {'primary ' if primary_only else ''}lines found for: "
+                        f"**{', '.join(empty_partners)}**"
+                    )
+
+                if sections:
+                    output_txt = "\n\n".join(sections)
+                    line_type = "primary" if primary_only else "all"
+
+                    # Preview
+                    st.subheader("Preview")
+                    st.code(output_txt, language="text")
+
+                    st.divider()
+
+                    # Download
+                    st.download_button(
+                        label=f"Download {line_type}_lines.txt",
+                        data=output_txt,
+                        file_name=f"{line_type}_lines.txt",
+                        mime="text/plain"
+                    )
+                else:
+                    st.error("No lines found for any of the selected partners.")
