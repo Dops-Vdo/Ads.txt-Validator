@@ -44,8 +44,8 @@ def get_domains():
 @st.cache_data(ttl=60)
 def get_partners():
     sb = get_supabase()
-    rows = sb.table("partners").select("id, name, integration_type").order("name").execute().data
-    return [(r["id"], r["name"], r["integration_type"] or "") for r in rows]
+    rows = sb.table("partners").select("id, name, integration_type, banner_eligible").order("name").execute().data
+    return [(r["id"], r["name"], r["integration_type"] or "", bool(r.get("banner_eligible", False))) for r in rows]
 
 
 @st.cache_data(ttl=60)
@@ -74,9 +74,9 @@ def add_domain(d: str, am: str):
 # ==========================
 # WRITE HELPERS — PARTNERS
 # ==========================
-def add_partner(name: str, itype: str, lines_raw: str, primary_lines_raw: str):
+def add_partner(name: str, itype: str, lines_raw: str, primary_lines_raw: str, banner_eligible: bool = False):
     sb = get_supabase()
-    sb.table("partners").upsert({"name": name, "integration_type": itype}, on_conflict="name").execute()
+    sb.table("partners").upsert({"name": name, "integration_type": itype, "banner_eligible": banner_eligible}, on_conflict="name").execute()
     pid = sb.table("partners").select("id").eq("name", name).execute().data[0]["id"]
     rows = []
     for ln in lines_raw.splitlines():
@@ -94,9 +94,9 @@ def add_partner(name: str, itype: str, lines_raw: str, primary_lines_raw: str):
     get_partner_primary_lines.clear()
 
 
-def update_partner(pid: int, new_name: str, new_itype: str, lines_raw: str, primary_lines_raw: str):
+def update_partner(pid: int, new_name: str, new_itype: str, lines_raw: str, primary_lines_raw: str, banner_eligible: bool = False):
     sb = get_supabase()
-    sb.table("partners").update({"name": new_name, "integration_type": new_itype}).eq("id", pid).execute()
+    sb.table("partners").update({"name": new_name, "integration_type": new_itype, "banner_eligible": banner_eligible}).eq("id", pid).execute()
     sb.table("partner_lines").delete().eq("partner_id", pid).execute()
     rows = []
     for ln in lines_raw.splitlines():
@@ -219,6 +219,7 @@ with tab_partners:
         with col_primary:
             np_primary = st.text_area("Primary Lines (subset — for approvals & publisher output)", height=220,
                 key="np_primary", placeholder="pubmatic.com, 123456, DIRECT, abc123\n...")
+        np_banner = st.checkbox("Banner Eligible", value=False, key="np_banner")
         if st.button("Add Partner", type="primary", key="btn_add_partner"):
             if not np_name.strip():
                 st.warning("Partner name is required.")
@@ -227,7 +228,7 @@ with tab_partners:
             elif not np_lines.strip():
                 st.warning("Please paste at least one ads.txt line.")
             else:
-                add_partner(np_name.strip(), np_itype, np_lines.strip(), np_primary.strip())
+                add_partner(np_name.strip(), np_itype, np_lines.strip(), np_primary.strip(), np_banner)
                 st.success(f"Partner **{np_name.strip()}** added!")
                 st.rerun()
 
@@ -250,14 +251,16 @@ with tab_partners:
         search = st.text_input("Search partners", placeholder="Type to filter...", key="partner_search")
         filtered = [p for p in partners if search.lower() in p[1].lower()] if search else partners
 
-        for pid, pname, pitype in filtered:
+        for pid, pname, pitype, pbanner in filtered:
             lines = get_partner_lines(pid)
             primary_lines = get_partner_primary_lines(pid)
-            with st.expander(f"**{pname}** — {pitype or 'N/A'} — {len(lines)} line(s) | {len(primary_lines)} primary"):
+            banner_label = " | Banner Eligible" if pbanner else ""
+            with st.expander(f"**{pname}** — {pitype or 'N/A'} — {len(lines)} line(s) | {len(primary_lines)} primary{banner_label}"):
                 col_info, col_actions = st.columns([3, 1])
                 with col_info:
                     edit_name = st.text_input("Partner Name", value=pname, key=f"edit_name_{pid}")
                     edit_itype = integration_type_widget(f"edit_{pid}", current_value=pitype or "")
+                    edit_banner = st.checkbox("Banner Eligible", value=pbanner, key=f"edit_banner_{pid}")
                     ec1, ec2 = st.columns(2)
                     with ec1:
                         edit_lines = st.text_area("All Ads.txt Lines", value="\n".join(lines), height=220, key=f"edit_lines_{pid}")
@@ -272,7 +275,7 @@ with tab_partners:
                         elif not edit_lines.strip():
                             st.warning("Lines cannot be empty.")
                         else:
-                            update_partner(pid, edit_name.strip(), edit_itype, edit_lines.strip(), edit_primary.strip())
+                            update_partner(pid, edit_name.strip(), edit_itype, edit_lines.strip(), edit_primary.strip(), edit_banner)
                             st.success(f"**{edit_name.strip()}** updated!")
                             st.rerun()
                     st.markdown("---")
@@ -423,7 +426,7 @@ with tab_validate:
                     crawler_stat[d] = status
                 live_norm = set(norm(x) for x in live)
                 for p in sel_partners:
-                    pid, name, itype = partner_map[p]
+                    pid, name, itype, pbanner = partner_map[p]
                     lines = get_partner_lines(pid)
                     primary_lines = get_partner_primary_lines(pid)
                     primary_present_count = sum(1 for l in primary_lines if norm(l) in live_norm)
@@ -445,6 +448,7 @@ with tab_validate:
                     results.append({
                         "Domain": d, "Account Manager": am_map.get(d, ""),
                         "Source": source_label, "Partner": name, "Integration": itype,
+                        "Banner Eligible": "Yes" if pbanner else "No",
                         "Primary Lines Present": primary_status,
                         "Total Lines": total_lines, "Present": len(present),
                         "Missing": len(missing), "Coverage %": coverage_pct,
@@ -549,10 +553,16 @@ with tab_validate:
                 else:
                     return "background-color: #f8d7da; color: #721c24"
 
+            def highlight_banner(val):
+                if val == "Yes":
+                    return "background-color: #cce5ff; color: #004085"
+                return "background-color: #e2e3e5; color: #383d41"
+
             styled = (
                 df.style
                 .map(highlight_coverage, subset=["Coverage %"])
                 .map(highlight_primary, subset=["Primary Lines Present"])
+                .map(highlight_banner, subset=["Banner Eligible"])
             )
             st.dataframe(styled, use_container_width=True)
 
