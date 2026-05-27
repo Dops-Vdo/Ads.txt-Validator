@@ -446,7 +446,7 @@ with tab_validate:
                         else ("Crawler" if crawler_stat[d] == "crawler" else "Blocked")
                     )
                     results.append({
-                        "Domain": d, "Account Manager": am_map.get(d, ""),
+                        "Domain": d,
                         "Source": source_label, "Partner": name, "Integration": itype,
                         "Banner Eligible": "Yes" if pbanner else "No",
                         "Primary Lines Present": primary_status,
