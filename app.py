@@ -331,38 +331,40 @@ with tab_export:
 
         st.divider()
 
-        if st.button("Generate Export", type="primary", key="btn_export"):
-            if not selected_export_partners:
-                st.warning("Please select at least one partner.")
-            else:
-                sections = []
-                empty_partners = []
-                for pname in selected_export_partners:
-                    pid = ex_partner_map[pname][0]
-                    lines = get_partner_primary_lines(pid) if primary_only else get_partner_lines(pid)
-                    if lines:
-                        block = f"# {pname}\n" + "\n".join(lines)
-                        sections.append(block)
-                    else:
-                        empty_partners.append(pname)
+        # Pre-generate output so download button is ready alongside generate button
+        if selected_export_partners:
+            sections = []
+            empty_partners = []
+            for pname in selected_export_partners:
+                pid = ex_partner_map[pname][0]
+                lines = get_partner_primary_lines(pid) if primary_only else get_partner_lines(pid)
+                if lines:
+                    block = f"# {pname}\n" + "\n".join(lines)
+                    sections.append(block)
+                else:
+                    empty_partners.append(pname)
+            output_txt = "\n\n".join(sections) if sections else ""
+            line_type = "primary" if primary_only else "all"
 
-                if empty_partners:
-                    st.warning(f"No {'primary ' if primary_only else ''}lines found for: **{', '.join(empty_partners)}**")
-
-                if sections:
-                    output_txt = "\n\n".join(sections)
-                    line_type = "primary" if primary_only else "all"
-                    st.subheader("Preview")
-                    st.code(output_txt, language="text")
-                    st.divider()
+            btn_col, dl_col = st.columns([1, 1])
+            with btn_col:
+                st.button("Generate Export", type="primary", key="btn_export", disabled=True if not output_txt else False)
+            with dl_col:
+                if output_txt:
                     st.download_button(
                         label=f"Download {line_type}_lines.txt",
                         data=output_txt,
                         file_name=f"{line_type}_lines.txt",
-                        mime="text/plain"
+                        mime="text/plain",
+                        type="primary"
                     )
                 else:
-                    st.error("No lines found for any of the selected partners.")
+                    st.button("Download", disabled=True, key="dl_disabled")
+
+            if empty_partners:
+                st.warning(f"No {'primary ' if primary_only else ''}lines found for: **{', '.join(empty_partners)}**")
+        else:
+            st.button("Generate Export", type="primary", key="btn_export", disabled=True)
 
 
 # ============================================================
