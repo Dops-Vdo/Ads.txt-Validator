@@ -578,8 +578,14 @@ with tab_validate:
                         missing_rows = []
                         for domain, partners_info in missing_detail.items():
                             for partner_name, lines in partners_info.items():
+                                banner_val = "Yes" if partner_map.get(partner_name, (None, None, None, False))[3] else "No"
                                 for line in lines:
-                                    missing_rows.append({"Domain": domain, "Partner": partner_name, "Missing Line": line})
+                                    missing_rows.append({
+                                        "Domain": domain,
+                                        "Partner": partner_name,
+                                        "Banner Eligible": banner_val,
+                                        "Missing Line": line
+                                    })
                         if missing_rows:
                             pd.DataFrame(missing_rows).to_excel(writer, index=False, sheet_name="Missing Lines")
                 excel_buf.seek(0)
