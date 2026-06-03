@@ -323,14 +323,21 @@ with tab_export:
             help="Choose one or more partners to export lines for."
         )
 
-        primary_only = st.checkbox(
-            "Only Primary Lines",
-            value=False,
-            help="If checked, only primary lines will be exported. Uncheck to export all lines."
-        )
-
-        if primary_only:
-            st.info("Only primary lines will be included in the export, grouped by partner name.")
+        ex_col1, ex_col2 = st.columns(2)
+        with ex_col1:
+            primary_only = st.checkbox(
+                "Only Primary Lines",
+                value=False,
+                key="exp_primary_only",
+                help="Export only primary lines for selected partners."
+            )
+        with ex_col2:
+            banner_only = st.checkbox(
+                "Only Banner Eligible Partners",
+                value=False,
+                key="exp_banner_only",
+                help="If checked, only partners marked as Banner Eligible will be included."
+            )
 
         st.divider()
 
@@ -339,7 +346,11 @@ with tab_export:
             sections = []
             empty_partners = []
             for pname in selected_export_partners:
-                pid = ex_partner_map[pname][0]
+                pid, pname_db, pitype, pbanner = ex_partner_map[pname]
+                # Skip non-banner partners if banner_only is checked
+                if banner_only and not pbanner:
+                    empty_partners.append(f"{pname} (not banner eligible)")
+                    continue
                 lines = get_partner_primary_lines(pid) if primary_only else get_partner_lines(pid)
                 if lines:
                     block = f"# {pname}\n" + "\n".join(lines)
@@ -348,10 +359,12 @@ with tab_export:
                     empty_partners.append(pname)
             output_txt = "\n\n".join(sections) if sections else ""
             line_type = "primary" if primary_only else "all"
+            if banner_only:
+                line_type = f"banner_{line_type}"
 
             btn_col, dl_col = st.columns([1, 1])
             with btn_col:
-                st.button("Generate Export", type="primary", key="btn_export", disabled=True if not output_txt else False)
+                st.button("Generate Export", type="primary", key="btn_export", disabled=not bool(output_txt))
             with dl_col:
                 if output_txt:
                     st.download_button(
@@ -365,7 +378,7 @@ with tab_export:
                     st.button("Download", disabled=True, key="dl_disabled")
 
             if empty_partners:
-                st.warning(f"No {'primary ' if primary_only else ''}lines found for: **{', '.join(empty_partners)}**")
+                st.warning(f"Skipped: **{', '.join(empty_partners)}**")
         else:
             st.button("Generate Export", type="primary", key="btn_export", disabled=True)
 
@@ -458,6 +471,12 @@ with tab_validate:
             progress.progress(1.0, text="Done!")
             return pd.DataFrame(results), missing_det, crawler_stat
 
+        # Detect if selections changed — clear stale results so old data doesn't show
+        current_hash = str(sorted(selected_domains)) + pasted_domains + str(sorted(selected_partners))
+        if st.session_state.get("val_selection_hash") != current_hash:
+            st.session_state["val_selection_hash"] = current_hash
+            st.session_state["val_results"] = None
+
         if st.button("Validate", type="primary"):
             doms = set(selected_domains)
             for d in pasted_domains.replace(",", " ").split():
@@ -477,6 +496,7 @@ with tab_validate:
                 st.session_state["val_crawler"] = crawler_status
                 st.session_state["val_doms"] = list(doms)
                 st.session_state["val_partners"] = selected_partners
+                st.session_state["val_selection_hash"] = current_hash
 
         if st.session_state.get("val_results"):
             df = pd.DataFrame(st.session_state["val_results"])
@@ -493,33 +513,6 @@ with tab_validate:
                 st.info(f"**Manual input used for:** `{'`, `'.join(manual_used)}`")
             if crawled:
                 st.success(f"**Crawler succeeded for:** `{'`, `'.join(crawled)}`")
-
-            if blocked_doms:
-                st.warning(
-                    f"**Crawler was blocked for {len(blocked_doms)} domain(s).** "
-                    "Paste their ads.txt content below and click Re-validate."
-                )
-                rcols = st.columns(2)
-                for i, d in enumerate(sorted(blocked_doms)):
-                    with rcols[i % 2]:
-                        st.text_area(f"{d}", height=150, key=f"revalidate_manual_{d}",
-                            placeholder=f"Paste content from https://{d}/ads.txt here...")
-                if st.button(f"Re-validate {len(blocked_doms)} blocked site(s)", type="primary", key="btn_revalidate"):
-                    filled = {
-                        d: st.session_state.get(f"revalidate_manual_{d}", "")
-                        for d in blocked_doms
-                        if st.session_state.get(f"revalidate_manual_{d}", "").strip()
-                    }
-                    if not filled:
-                        st.warning("Please paste ads.txt content for at least one blocked domain.")
-                    else:
-                        crawled_df = df[df["Source"] != "Blocked"]
-                        new_df, new_missing, new_status = run_validation(set(filled.keys()), selected_partners, filled)
-                        merged_df = pd.concat([crawled_df, new_df], ignore_index=True)
-                        st.session_state["val_results"] = merged_df.to_dict("records")
-                        st.session_state["val_missing"] = {**missing_detail, **new_missing}
-                        st.session_state["val_crawler"] = {**crawler_status, **new_status}
-                        st.rerun()
 
             st.subheader("Summary")
             m1, m2, m3, m4, m5 = st.columns(5)
@@ -603,3 +596,32 @@ with tab_validate:
                     data=primary_txt if primary_txt else "# No primary lines found",
                     file_name="primary_lines.txt", mime="text/plain"
                 )
+
+            # ── Blocked sites re-validate (moved below downloads) ──
+            if blocked_doms:
+                st.divider()
+                st.warning(
+                    f"**Crawler was blocked for {len(blocked_doms)} domain(s).** "
+                    "Paste their ads.txt content below and click Re-validate."
+                )
+                rcols = st.columns(2)
+                for i, d in enumerate(sorted(blocked_doms)):
+                    with rcols[i % 2]:
+                        st.text_area(f"{d}", height=150, key=f"revalidate_manual_{d}",
+                            placeholder=f"Paste content from https://{d}/ads.txt here...")
+                if st.button(f"Re-validate {len(blocked_doms)} blocked site(s)", type="primary", key="btn_revalidate"):
+                    filled = {
+                        d: st.session_state.get(f"revalidate_manual_{d}", "")
+                        for d in blocked_doms
+                        if st.session_state.get(f"revalidate_manual_{d}", "").strip()
+                    }
+                    if not filled:
+                        st.warning("Please paste ads.txt content for at least one blocked domain.")
+                    else:
+                        crawled_df = df[df["Source"] != "Blocked"]
+                        new_df, new_missing, new_status = run_validation(set(filled.keys()), selected_partners, filled)
+                        merged_df = pd.concat([crawled_df, new_df], ignore_index=True)
+                        st.session_state["val_results"] = merged_df.to_dict("records")
+                        st.session_state["val_missing"] = {**missing_detail, **new_missing}
+                        st.session_state["val_crawler"] = {**crawler_status, **new_status}
+                        st.rerun()
