@@ -305,20 +305,6 @@ def check_id_match(id_type: str, id_value: str, live_lines_raw: list):
     return None
 
 
-def classify_relationship_label(relationship_types_found: set) -> str:
-    """
-    Turn a set of matched relationship strings (lowercase 'direct'/'reseller')
-    into a display label: 'Direct', 'Reseller', 'Both', or 'N/A'.
-    """
-    if relationship_types_found == {"direct", "reseller"}:
-        return "Both"
-    elif relationship_types_found == {"direct"}:
-        return "Direct"
-    elif relationship_types_found == {"reseller"}:
-        return "Reseller"
-    return "N/A"
-
-
 def build_dv_summary_txt(dv_summary: dict) -> str:
     """Build the plain-text 'Present lines are ...' + go-live summary for DV ID-match results."""
     lines_out = []
@@ -679,18 +665,12 @@ with tab_validate:
                             missing_lines = []
                             partner_has_direct = False
                             partner_has_reseller = False
-                            relationship_types_found = set()  # NEW: tracks direct/reseller across confirmed matches
 
                             for l in lines:
                                 if "," in l:
                                     result = check_dv_line_match(l, live_norm, live)
                                     if result == "Full Match":
                                         full_matches.append(l)
-                                        # NEW: pull relationship straight from the partner's own (matched) line
-                                        parts = [p2.strip().lower() for p2 in l.split(",")]
-                                        rel = parts[2].strip().lower() if len(parts) > 2 else ""
-                                        if rel in VALID_RELATIONSHIPS:
-                                            relationship_types_found.add(rel)
                                     elif result == "Domain Only":
                                         domain_only_matches.append(l)
                                     else:
@@ -700,7 +680,6 @@ with tab_validate:
                                     matched_relationship = check_id_match(id_type, id_value, live)
                                     if matched_relationship:
                                         id_matches.append(l.strip())
-                                        relationship_types_found.add(matched_relationship.lower())  # NEW
                                         if id_type == "domain":
                                             partner_has_direct = True
                                         else:
@@ -712,8 +691,6 @@ with tab_validate:
                             confirmed = len(full_matches) + len(id_matches)
                             full_pct = round((confirmed / total_lines * 100), 1) if total_lines > 0 else 0.0
                             any_pct = round(((confirmed + len(domain_only_matches)) / total_lines * 100), 1) if total_lines > 0 else 0.0
-
-                            relationship_label = classify_relationship_label(relationship_types_found)  # NEW
 
                             source_label = (
                                 "Manual" if crawler_stat[d] == "manual"
@@ -727,7 +704,6 @@ with tab_validate:
                                 "Banner Eligible": "Yes" if pbanner else "No",
                                 "Business Unit": ", ".join(pbus_units or ["Demand"]),
                                 "Primary Lines Present": primary_status,
-                                "Relationship Type": relationship_label,  # NEW column
                                 "Total Lines": total_lines,
                                 "Full Matches": len(full_matches),
                                 "ID Matches": len(id_matches),
@@ -884,17 +860,6 @@ with tab_validate:
                         return "background-color: #d4edda; color: #155724; font-weight: 600"
                     return "background-color: #f8d7da; color: #721c24"
 
-                def highlight_relationship(val):
-                    """NEW: color cells for Direct / Reseller / Both / N/A."""
-                    if val == "Both":
-                        return "background-color: #cce5ff; color: #004085; font-weight: 600"
-                    elif val == "Direct":
-                        return "background-color: #d4edda; color: #155724"
-                    elif val == "Reseller":
-                        return "background-color: #fff3cd; color: #856404"
-                    else:
-                        return "background-color: #e2e3e5; color: #383d41"
-
                 if is_dv_results:
                     styled = (
                         df.style
@@ -903,12 +868,10 @@ with tab_validate:
                         .map(highlight_banner, subset=["Banner Eligible"])
                         .map(highlight_dv_match, subset=["Domain-Only Matches"])
                         .map(highlight_go_live, subset=["Go-Live Ready"])
-                        .map(highlight_relationship, subset=["Relationship Type"])  # NEW
                     )
                     st.caption(
                         "🟢 Full Match = exact line present | 🟢 ID Match = bare identifier (direct domain / google reseller pub-id) confirmed present | "
                         "🟡 Domain-Only Match = seller domain present but line differs | 🔴 Missing = not found at all | "
-                        "**Relationship Type** = Direct / Reseller / Both, based on all confirmed-matched lines for that partner on that domain | "
                         "**Go-Live Ready** = this partner has both a matched direct line AND a matched google-reseller ID for this domain"
                     )
                 else:
