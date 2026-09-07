@@ -233,56 +233,22 @@ def extract_domain_part(line: str) -> str:
     return parts[0].strip().lower() if parts else ""
 
 
-VALID_RELATIONSHIPS = {"direct", "reseller"}
-
-
-def extract_relationship_part(line: str) -> str:
-    """Extract the relationship (3rd field, DIRECT/RESELLER) from an ads.txt line, lowercased."""
-    parts = line.split(",")
-    if len(parts) > 2:
-        rel = parts[2].strip().lower()
-        if rel in VALID_RELATIONSHIPS:
-            return rel
-    return ""
-
-
 def check_dv_line_match(line: str, live_norm_set: set, live_lines_raw: list) -> str:
     """
-    For DV unit: checks a partner line against live lines at three levels
-    (case-insensitive throughout — domains and DIRECT/RESELLER are lowercased
-    before any comparison, so 'RESELLER', 'Reseller', 'reseller' are all equal):
-
-      1. "Full Match"                  -> entire line matches exactly (domain + id + relationship + ...)
-      2. "Domain+Relationship Match"   -> domain matches AND relationship (DIRECT/RESELLER) matches,
-                                           even though the ID (2nd field) differs or is absent.
-                                           This is what makes a line like
-                                           "adipolosolutions.com,23103196211,reseller" count as present
-                                           if the live ads.txt has ANY line for that domain marked RESELLER,
-                                           regardless of the ID value.
-      3. "Domain Only"                 -> only the domain matches; relationship differs/missing.
-      4. "Missing"                     -> domain not found at all.
+    For DV unit: check if a partner line is a full match, domain-only match, or missing.
+    Returns: "Full Match", "Domain Only", or "Missing"
     """
     line_norm = norm(line)
     if line_norm in live_norm_set:
         return "Full Match"
-
+    # Check domain-only: does the first part of this line appear as the first part of any live line?
     partner_domain = extract_domain_part(line)
-    partner_rel = extract_relationship_part(line)
-
-    if not partner_domain:
-        return "Missing"
-
-    domain_seen = False
-    for live_line in live_lines_raw:
-        live_domain = extract_domain_part(live_line)
-        if live_domain == partner_domain:
-            domain_seen = True
-            if partner_rel:
-                live_rel = extract_relationship_part(live_line)
-                if live_rel == partner_rel:
-                    return "Domain+Relationship Match"
-
-    return "Domain Only" if domain_seen else "Missing"
+    if partner_domain:
+        for live_line in live_lines_raw:
+            live_domain = extract_domain_part(live_line)
+            if live_domain == partner_domain:
+                return "Domain Only"
+    return "Missing"
 
 
 # ==========================
@@ -302,11 +268,13 @@ def classify_identifier(raw: str):
     return "domain", val
 
 
+VALID_RELATIONSHIPS = {"direct", "reseller"}
+
+
 def check_id_match(id_type: str, id_value: str, live_lines_raw: list):
     """
     Check whether a classified identifier appears in the live ads.txt lines.
     Returns the matched relationship ("DIRECT" or "RESELLER") on success, or None.
-    Case-insensitive: all fields are lowercased before comparison.
 
     A domain-type identifier (e.g. "vdo.ai") is accepted whether the live line
     marks it DIRECT or RESELLER — both count as the domain being present.
@@ -386,11 +354,7 @@ with tab_partners:
         "For **DV** partners you can enter either a full ads.txt line (comma-separated, as usual), "
         "or a bare identifier on its own line to enable ID-based matching:\n"
         "- a domain (e.g. `vdo.ai`) → checked as a **direct** line\n"
-        "- a numeric publisher ID, with or without `pub-` (e.g. `7094677798399606`) → checked against **google.com RESELLER** lines\n\n"
-        "For full comma-separated lines, if the exact ID differs from what's live but the **domain and relationship "
-        "(DIRECT/RESELLER) both match**, it now counts as a **Domain+Relationship Match** (case-insensitive) — "
-        "e.g. `adipolosolutions.com,23103196211,reseller` is treated as present if the live ads.txt has "
-        "*any* RESELLER line for `adipolosolutions.com`, even with a different ID."
+        "- a numeric publisher ID, with or without `pub-` (e.g. `7094677798399606`) → checked against **google.com RESELLER** lines"
     )
 
     with st.expander("Add New Partner", expanded=len(partners) == 0):
@@ -618,11 +582,11 @@ with tab_validate:
                 index=0,
                 horizontal=True,
                 key="active_bu",
-                help="Select which business unit to validate. DV uses partial (domain-only), domain+relationship, and ID-based matching for bare identifiers."
+                help="Select which business unit to validate. DV uses partial (domain-only) matching plus ID-based matching for bare identifiers."
             )
         with bu_col2:
             if active_bu == "DV":
-                st.info("🔍 DV Mode: partial + relationship + ID matching enabled")
+                st.info("🔍 DV Mode: partial + ID matching enabled")
 
         st.divider()
 
@@ -692,11 +656,10 @@ with tab_validate:
 
                         if is_dv:
                             # DV mode: classify each line.
-                            # Lines WITH a comma -> Full Match / Domain+Relationship Match / Domain Only / Missing.
+                            # Lines WITH a comma -> Full Match / Domain Only / Missing (existing logic).
                             # Lines WITHOUT a comma -> bare identifier -> ID Match (direct domain or
                             # google reseller pub-id) via check_id_match.
                             full_matches = []
-                            domain_rel_matches = []   # domain + relationship match, ID differs
                             domain_only_matches = []
                             id_matches = []
                             missing_lines = []
@@ -706,19 +669,8 @@ with tab_validate:
                             for l in lines:
                                 if "," in l:
                                     result = check_dv_line_match(l, live_norm, live)
-                                    partner_rel = extract_relationship_part(l)
                                     if result == "Full Match":
                                         full_matches.append(l)
-                                        if partner_rel == "direct":
-                                            partner_has_direct = True
-                                        elif partner_rel == "reseller":
-                                            partner_has_reseller = True
-                                    elif result == "Domain+Relationship Match":
-                                        domain_rel_matches.append(l)
-                                        if partner_rel == "direct":
-                                            partner_has_direct = True
-                                        elif partner_rel == "reseller":
-                                            partner_has_reseller = True
                                     elif result == "Domain Only":
                                         domain_only_matches.append(l)
                                     else:
@@ -736,7 +688,7 @@ with tab_validate:
                                         missing_lines.append(l)
 
                             total_lines = len(lines)
-                            confirmed = len(full_matches) + len(domain_rel_matches) + len(id_matches)
+                            confirmed = len(full_matches) + len(id_matches)
                             full_pct = round((confirmed / total_lines * 100), 1) if total_lines > 0 else 0.0
                             any_pct = round(((confirmed + len(domain_only_matches)) / total_lines * 100), 1) if total_lines > 0 else 0.0
 
@@ -754,7 +706,6 @@ with tab_validate:
                                 "Primary Lines Present": primary_status,
                                 "Total Lines": total_lines,
                                 "Full Matches": len(full_matches),
-                                "Domain+Rel Matches": len(domain_rel_matches),
                                 "ID Matches": len(id_matches),
                                 "Domain-Only Matches": len(domain_only_matches),
                                 "Missing": len(missing_lines),
@@ -767,13 +718,7 @@ with tab_validate:
                             if domain_only_matches and show_missing_lines:
                                 missing_det.setdefault(d, {}).setdefault(f"{name} [Domain-Only]", domain_only_matches)
 
-                            id_matches_for_summary = list(id_matches)
-                            for l in domain_rel_matches:
-                                rel = extract_relationship_part(l).upper()
-                                dom_part = extract_domain_part(l)
-                                id_matches_for_summary.append(f"{dom_part} [{rel}, ID differs]")
-
-                            dv_summary[d]["matched_ids"].extend(id_matches_for_summary)
+                            dv_summary[d]["matched_ids"].extend(id_matches)
                             if partner_has_direct and partner_has_reseller:
                                 dv_summary[d]["eligible_partners"].append(name)
                         else:
@@ -910,13 +855,6 @@ with tab_validate:
                             return "background-color: #fff3cd; color: #856404"
                     return ""
 
-                def highlight_domain_rel(val):
-                    """Color cells for Domain+Relationship match count (counts as a positive signal)."""
-                    if isinstance(val, (int, float)):
-                        if val > 0:
-                            return "background-color: #cce5ff; color: #004085"
-                    return ""
-
                 def highlight_go_live(val):
                     if val == "Yes":
                         return "background-color: #d4edda; color: #155724; font-weight: 600"
@@ -928,16 +866,13 @@ with tab_validate:
                         .map(highlight_coverage, subset=["Full Match %", "Any Match %"])
                         .map(highlight_primary, subset=["Primary Lines Present"])
                         .map(highlight_banner, subset=["Banner Eligible"])
-                        .map(highlight_domain_rel, subset=["Domain+Rel Matches"])
                         .map(highlight_dv_match, subset=["Domain-Only Matches"])
                         .map(highlight_go_live, subset=["Go-Live Ready"])
                     )
                     st.caption(
-                        "🟢 Full Match = exact line present | 🔵 Domain+Rel Match = domain & relationship (DIRECT/RESELLER) both present live, ID differs | "
-                        "🟢 ID Match = bare identifier (direct domain / google reseller pub-id) confirmed present | "
-                        "🟡 Domain-Only Match = seller domain present but relationship differs/missing | 🔴 Missing = not found at all | "
-                        "**Go-Live Ready** = this partner has both a matched direct line AND a matched google-reseller line/ID for this domain "
-                        "(Full Match and Domain+Rel Match both count toward this). All comparisons are case-insensitive."
+                        "🟢 Full Match = exact line present | 🟢 ID Match = bare identifier (direct domain / google reseller pub-id) confirmed present | "
+                        "🟡 Domain-Only Match = seller domain present but line differs | 🔴 Missing = not found at all | "
+                        "**Go-Live Ready** = this partner has both a matched direct line AND a matched google-reseller ID for this domain"
                     )
                 else:
                     styled = (
@@ -960,9 +895,9 @@ with tab_validate:
                         badge = "🟢 Go-Live Ready" if eligible else "⚪ Not yet"
                         with st.expander(f"{domain} — {badge}"):
                             if matched:
-                                st.write("**Present lines (ID / domain+relationship match):** " + ", ".join(matched))
+                                st.write("**Present lines (ID match):** " + ", ".join(matched))
                             else:
-                                st.write("No ID-based or domain+relationship identifiers matched for this domain.")
+                                st.write("No ID-based identifiers matched for this domain.")
                             if eligible:
                                 st.success(f"Has both direct + google-reseller lines for: {', '.join(eligible)}")
 
@@ -981,7 +916,7 @@ with tab_validate:
                         with st.expander(f"{domain}"):
                             for partner_name, lines in partners_info.items():
                                 if "[Domain-Only]" in partner_name:
-                                    st.markdown(f"**{partner_name}** — {len(lines)} line(s) with domain present but relationship differs/missing:")
+                                    st.markdown(f"**{partner_name}** — {len(lines)} line(s) with domain present but full line differs:")
                                     st.code("\n".join(lines), language="text")
                                 else:
                                     st.markdown(f"**{partner_name}** — {len(lines)} missing line(s):")
