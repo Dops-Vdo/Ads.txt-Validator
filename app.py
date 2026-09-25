@@ -20,7 +20,45 @@ BUSINESS_UNITS = ["Demand", "DV"]
 SUPABASE_URL = "https://sfupddaemxpalstlomzt.supabase.co"
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
+# PIN required to unlock editing (add/edit/delete). Set this in
+# .streamlit/secrets.toml (local) or the Secrets panel (Streamlit Cloud):
+#   EDIT_PIN = "1234"
+EDIT_PIN = st.secrets["EDIT_PIN"]
+
 st.set_page_config(page_title=APP_TITLE, layout="wide")
+
+# ==========================
+# EDIT AUTHORIZATION (PIN GATE)
+# ==========================
+if "is_editor" not in st.session_state:
+    st.session_state["is_editor"] = False
+
+
+def require_pin_gate(location=None, key_suffix: str = "") -> bool:
+    """
+    Renders a PIN input + Unlock button at `location` (defaults to st).
+    Returns True once the correct PIN has been entered this session
+    (persists across tabs/reruns until the browser tab/session ends).
+    `key_suffix` lets you render this in more than one place (e.g. sidebar
+    AND a tab) without Streamlit key collisions.
+    """
+    if st.session_state["is_editor"]:
+        return True
+
+    target = location if location is not None else st
+    with target:
+        st.caption("🔒 Editing is locked. Enter PIN to add, edit, or delete.")
+        pin_input = st.text_input(
+            "PIN", type="password", key=f"pin_gate_input_{key_suffix}"
+        )
+        if st.button("Unlock editing", key=f"pin_gate_btn_{key_suffix}"):
+            if pin_input == EDIT_PIN:
+                st.session_state["is_editor"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect PIN.")
+    return st.session_state["is_editor"]
+
 
 # ==========================
 # SUPABASE CLIENT
@@ -275,14 +313,6 @@ def check_id_match(id_type: str, id_value: str, live_lines_raw: list):
     """
     Check whether a classified identifier appears in the live ads.txt lines.
     Returns the matched relationship ("DIRECT" or "RESELLER") on success, or None.
-
-    A domain-type identifier (e.g. "vdo.ai") is accepted whether the live line
-    marks it DIRECT or RESELLER — both count as the domain being present.
-    A reseller-type identifier (google.com pub-id) is likewise accepted as
-    either DIRECT or RESELLER, though in practice these are almost always RESELLER.
-    In both cases, the relationship field must actually be present and be a
-    recognized value (DIRECT/RESELLER) — a malformed or missing relationship
-    field does not count as a confirmed match.
     """
     for live_line in live_lines_raw:
         parts = [p.strip().lower() for p in live_line.split(",")]
@@ -336,6 +366,13 @@ def build_dv_summary_txt(dv_summary: dict) -> str:
 st.title(APP_TITLE)
 st.caption("Validate ads.txt coverage across domains and demand partners.")
 
+if st.session_state["is_editor"]:
+    top_l, top_r = st.columns([5, 1])
+    with top_r:
+        if st.button("🔒 Lock editing"):
+            st.session_state["is_editor"] = False
+            st.rerun()
+
 # ==========================
 # TABS
 # ==========================
@@ -347,6 +384,11 @@ tab_validate, tab_partners, tab_export = st.tabs(["Validate", "Manage Partners",
 # ============================================================
 with tab_partners:
     st.header("Manage Demand Partners")
+
+    is_editor = require_pin_gate(key_suffix="partners_tab")
+    if is_editor:
+        st.success("✅ Editing unlocked for this session.")
+
     partners = get_partners()
     partner_map = {p[1]: p for p in partners}
 
@@ -357,32 +399,35 @@ with tab_partners:
         "- a numeric publisher ID, with or without `pub-` (e.g. `7094677798399606`) → checked against **google.com RESELLER** lines"
     )
 
-    with st.expander("Add New Partner", expanded=len(partners) == 0):
-        np_name = st.text_input("Partner Name", key="np_name")
-        np_itype = integration_type_widget("np")
-        np_bus_units = business_unit_widget("np", ["Demand"])
-        st.caption(id_match_help)
-        col_lines, col_primary = st.columns(2)
-        with col_lines:
-            np_lines = st.text_area("All Ads.txt Lines (one per line)", height=220, key="np_lines",
-                placeholder="pubmatic.com, 123456, DIRECT, abc123\nappnexus.com, 789, RESELLER\nvdo.ai\n7094677798399606\n...")
-        with col_primary:
-            np_primary = st.text_area("Primary Lines (subset — for approvals & publisher output)", height=220,
-                key="np_primary", placeholder="pubmatic.com, 123456, DIRECT, abc123\n...")
-        np_banner = st.checkbox("Banner Eligible", value=False, key="np_banner")
-        if st.button("Add Partner", type="primary", key="btn_add_partner"):
-            if not np_name.strip():
-                st.warning("Partner name is required.")
-            elif np_name.strip() in partner_map:
-                st.error(f"Partner **{np_name.strip()}** already exists.")
-            elif not np_lines.strip():
-                st.warning("Please paste at least one ads.txt line.")
-            elif not np_bus_units:
-                st.warning("Please select at least one Business Unit.")
-            else:
-                add_partner(np_name.strip(), np_itype, np_lines.strip(), np_primary.strip(), np_banner, np_bus_units)
-                st.success(f"Partner **{np_name.strip()}** added!")
-                st.rerun()
+    if not is_editor:
+        st.info("🔒 Enter the PIN above to add, edit, or delete partners.")
+    else:
+        with st.expander("Add New Partner", expanded=len(partners) == 0):
+            np_name = st.text_input("Partner Name", key="np_name")
+            np_itype = integration_type_widget("np")
+            np_bus_units = business_unit_widget("np", ["Demand"])
+            st.caption(id_match_help)
+            col_lines, col_primary = st.columns(2)
+            with col_lines:
+                np_lines = st.text_area("All Ads.txt Lines (one per line)", height=220, key="np_lines",
+                    placeholder="pubmatic.com, 123456, DIRECT, abc123\nappnexus.com, 789, RESELLER\nvdo.ai\n7094677798399606\n...")
+            with col_primary:
+                np_primary = st.text_area("Primary Lines (subset — for approvals & publisher output)", height=220,
+                    key="np_primary", placeholder="pubmatic.com, 123456, DIRECT, abc123\n...")
+            np_banner = st.checkbox("Banner Eligible", value=False, key="np_banner")
+            if st.button("Add Partner", type="primary", key="btn_add_partner"):
+                if not np_name.strip():
+                    st.warning("Partner name is required.")
+                elif np_name.strip() in partner_map:
+                    st.error(f"Partner **{np_name.strip()}** already exists.")
+                elif not np_lines.strip():
+                    st.warning("Please paste at least one ads.txt line.")
+                elif not np_bus_units:
+                    st.warning("Please select at least one Business Unit.")
+                else:
+                    add_partner(np_name.strip(), np_itype, np_lines.strip(), np_primary.strip(), np_banner, np_bus_units)
+                    st.success(f"Partner **{np_name.strip()}** added!")
+                    st.rerun()
 
     st.divider()
 
@@ -411,47 +456,50 @@ with tab_partners:
             with st.expander(f"**{pname}** — {pitype or 'N/A'} — {len(lines)} line(s) | {len(primary_lines)} primary{banner_label}{bu_label}"):
                 col_info, col_actions = st.columns([3, 1])
                 with col_info:
-                    edit_name = st.text_input("Partner Name", value=pname, key=f"edit_name_{pid}")
+                    edit_name = st.text_input("Partner Name", value=pname, key=f"edit_name_{pid}", disabled=not is_editor)
                     edit_itype = integration_type_widget(f"edit_{pid}", current_value=pitype or "")
                     edit_bus_units = business_unit_widget(f"edit_{pid}", current_units=pbus_units or ["Demand"])
-                    edit_banner = st.checkbox("Banner Eligible", value=pbanner, key=f"edit_banner_{pid}")
+                    edit_banner = st.checkbox("Banner Eligible", value=pbanner, key=f"edit_banner_{pid}", disabled=not is_editor)
                     if "DV" in (pbus_units or []):
                         st.caption(id_match_help)
                     ec1, ec2 = st.columns(2)
                     with ec1:
-                        edit_lines = st.text_area("All Ads.txt Lines", value="\n".join(lines), height=220, key=f"edit_lines_{pid}")
+                        edit_lines = st.text_area("All Ads.txt Lines", value="\n".join(lines), height=220, key=f"edit_lines_{pid}", disabled=not is_editor)
                     with ec2:
-                        edit_primary = st.text_area("Primary Lines", value="\n".join(primary_lines), height=220, key=f"edit_primary_{pid}")
+                        edit_primary = st.text_area("Primary Lines", value="\n".join(primary_lines), height=220, key=f"edit_primary_{pid}", disabled=not is_editor)
                 with col_actions:
                     st.markdown("&nbsp;", unsafe_allow_html=True)
                     st.markdown("&nbsp;", unsafe_allow_html=True)
-                    if st.button("Save", key=f"save_{pid}", use_container_width=True):
-                        if not edit_name.strip():
-                            st.warning("Name cannot be empty.")
-                        elif not edit_lines.strip():
-                            st.warning("Lines cannot be empty.")
-                        elif not edit_bus_units:
-                            st.warning("Select at least one Business Unit.")
-                        else:
-                            update_partner(pid, edit_name.strip(), edit_itype, edit_lines.strip(), edit_primary.strip(), edit_banner, edit_bus_units)
-                            st.success(f"**{edit_name.strip()}** updated!")
-                            st.rerun()
-                    st.markdown("---")
-                    if st.button("Delete", key=f"del_{pid}", use_container_width=True):
-                        st.session_state[f"confirm_del_{pid}"] = True
-                    if st.session_state.get(f"confirm_del_{pid}"):
-                        st.error(f"Delete **{pname}**?")
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            if st.button("Yes", key=f"yes_del_{pid}", use_container_width=True):
-                                delete_partner(pid)
-                                st.session_state.pop(f"confirm_del_{pid}", None)
-                                st.success(f"Deleted **{pname}**")
+                    if not is_editor:
+                        st.caption("🔒 PIN required to edit")
+                    else:
+                        if st.button("Save", key=f"save_{pid}", use_container_width=True):
+                            if not edit_name.strip():
+                                st.warning("Name cannot be empty.")
+                            elif not edit_lines.strip():
+                                st.warning("Lines cannot be empty.")
+                            elif not edit_bus_units:
+                                st.warning("Select at least one Business Unit.")
+                            else:
+                                update_partner(pid, edit_name.strip(), edit_itype, edit_lines.strip(), edit_primary.strip(), edit_banner, edit_bus_units)
+                                st.success(f"**{edit_name.strip()}** updated!")
                                 st.rerun()
-                        with c2:
-                            if st.button("No", key=f"no_del_{pid}", use_container_width=True):
-                                st.session_state.pop(f"confirm_del_{pid}", None)
-                                st.rerun()
+                        st.markdown("---")
+                        if st.button("Delete", key=f"del_{pid}", use_container_width=True):
+                            st.session_state[f"confirm_del_{pid}"] = True
+                        if st.session_state.get(f"confirm_del_{pid}"):
+                            st.error(f"Delete **{pname}**?")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                if st.button("Yes", key=f"yes_del_{pid}", use_container_width=True):
+                                    delete_partner(pid)
+                                    st.session_state.pop(f"confirm_del_{pid}", None)
+                                    st.success(f"Deleted **{pname}**")
+                                    st.rerun()
+                            with c2:
+                                if st.button("No", key=f"no_del_{pid}", use_container_width=True):
+                                    st.session_state.pop(f"confirm_del_{pid}", None)
+                                    st.rerun()
                 if primary_lines:
                     per_txt = f"# {pname}\n" + "\n".join(primary_lines)
                     st.download_button(
@@ -559,15 +607,19 @@ with tab_validate:
 
     with st.sidebar:
         st.subheader("Add New Domain")
-        new_domain = st.text_input("Domain (e.g. example.com)")
-        new_am = st.text_input("Account Manager")
-        if st.button("Add Domain"):
-            if new_domain:
-                add_domain(new_domain.strip().lower(), new_am.strip())
-                st.success(f"Added: {new_domain}")
-                st.rerun()
-            else:
-                st.warning("Please enter a domain.")
+        sidebar_is_editor = require_pin_gate(location=st.sidebar, key_suffix="sidebar")
+        if not sidebar_is_editor:
+            st.caption("🔒 Enter PIN above to add domains.")
+        else:
+            new_domain = st.text_input("Domain (e.g. example.com)")
+            new_am = st.text_input("Account Manager")
+            if st.button("Add Domain"):
+                if new_domain:
+                    add_domain(new_domain.strip().lower(), new_am.strip())
+                    st.success(f"Added: {new_domain}")
+                    st.rerun()
+                else:
+                    st.warning("Please enter a domain.")
 
     if not partners:
         st.warning("No partners found. Go to the **Manage Partners** tab to add your first partner.")
@@ -655,10 +707,6 @@ with tab_validate:
                             primary_status = f"Partial ({primary_present_count}/{primary_total})"
 
                         if is_dv:
-                            # DV mode: classify each line.
-                            # Lines WITH a comma -> Full Match / Domain Only / Missing (existing logic).
-                            # Lines WITHOUT a comma -> bare identifier -> ID Match (direct domain or
-                            # google reseller pub-id) via check_id_match.
                             full_matches = []
                             domain_only_matches = []
                             id_matches = []
@@ -722,7 +770,6 @@ with tab_validate:
                             if partner_has_direct and partner_has_reseller:
                                 dv_summary[d]["eligible_partners"].append(name)
                         else:
-                            # Demand mode: exact matching (original logic)
                             present = [l for l in lines if norm(l) in live_norm]
                             missing = [l for l in lines if norm(l) not in live_norm]
                             total_lines = len(lines)
@@ -847,7 +894,6 @@ with tab_validate:
                     return "background-color: #e2e3e5; color: #383d41"
 
                 def highlight_dv_match(val):
-                    """Color cells for DV domain-only match count."""
                     if isinstance(val, (int, float)):
                         if val == 0:
                             return "background-color: #d4edda; color: #155724"
