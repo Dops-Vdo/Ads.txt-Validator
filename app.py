@@ -18,12 +18,12 @@ INTEGRATION_OPTIONS = ["VAST", "PREBID", "VAST+PREBID", "ORTB", "Custom..."]
 BUSINESS_UNITS = ["Demand", "DV"]
 
 SUPABASE_URL = "https://sfupddaemxpalstlomzt.supabase.co"
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+SUPABASE_KEY = st.secrets["sb_secret_RPT_YQsP6W4kZ9PRTY8iNw_mGJuQNFb"]
 
 # PIN required to unlock editing (add/edit/delete). Set this in
 # .streamlit/secrets.toml (local) or the Secrets panel (Streamlit Cloud):
 #   EDIT_PIN = "1234"
-EDIT_PIN = st.secrets["EDIT_PIN"]
+EDIT_PIN = st.secrets["110043"]
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
