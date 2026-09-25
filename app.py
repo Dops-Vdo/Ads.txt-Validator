@@ -18,12 +18,12 @@ INTEGRATION_OPTIONS = ["VAST", "PREBID", "VAST+PREBID", "ORTB", "Custom..."]
 BUSINESS_UNITS = ["Demand", "DV"]
 
 SUPABASE_URL = "https://sfupddaemxpalstlomzt.supabase.co"
-SUPABASE_KEY = st.secrets["sb_secret_RPT_YQsP6W4kZ9PRTY8iNw_mGJuQNFb"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 # PIN required to unlock editing (add/edit/delete). Set this in
 # .streamlit/secrets.toml (local) or the Secrets panel (Streamlit Cloud):
 #   EDIT_PIN = "1234"
-EDIT_PIN = st.secrets["110043"]
+EDIT_PIN = st.secrets["EDIT_PIN"]
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
@@ -45,7 +45,7 @@ def require_pin_gate(location=None, key_suffix: str = "") -> bool:
     if st.session_state["is_editor"]:
         return True
 
-    target = location if location is not None else st
+    target = location if location is not None else st.container()
     with target:
         st.caption("🔒 Editing is locked. Enter PIN to add, edit, or delete.")
         pin_input = st.text_input(
